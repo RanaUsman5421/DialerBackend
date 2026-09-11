@@ -6,6 +6,7 @@
     "check": "node --check server.js && node --check services/pairingStore.js",
     "test:pairing": "node scripts/pairingIntegrationCheck.js",
     "test:auth": "node scripts/authIntegrationCheck.js",
+    "test:persistence": "node scripts/pairingPersistenceCheck.js",
     "import-users": "node scripts/importUsers.js"
   },
 
