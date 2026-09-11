@@ -15,6 +15,7 @@ const upload = multer({
   },
 });
 
+router.get("/assigned", requireAuth, leads.listAssignedLeads);
 router.use(requireAuth, requireAdmin);
 router.get("/stats", leads.stats);
 router.get("/imports", leads.listImports);

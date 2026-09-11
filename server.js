@@ -29,6 +29,7 @@ app.get("/health", (_req, res) => res.json({ ok: true, mongo: mongoose.connectio
 app.use("/api/auth", authRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/admin/leads", leadRoutes);
+app.use("/api/leads", leadRoutes);
 
 app.post("/api/pairing/sessions", requireAuth, async (req, res) => {
   try {

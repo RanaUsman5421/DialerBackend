@@ -84,6 +84,18 @@ async function listLeads(req, res) {
   res.json({ leads: items, pagination: { page, limit, total, pages: Math.max(1, Math.ceil(total / limit)) } });
 }
 
+async function listAssignedLeads(req, res) {
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(10, Number(req.query.limit) || 25));
+  const filter = { assignedTo: req.user._id };
+  if (req.query.status) filter.status = req.query.status;
+  const [items, total] = await Promise.all([
+    Lead.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
+    Lead.countDocuments(filter),
+  ]);
+  res.json({ leads: items, pagination: { page, limit, total, pages: Math.max(1, Math.ceil(total / limit)) } });
+}
+
 async function listImports(req, res) {
   const imports = await LeadImport.find().populate("assignedTo", "name username email").populate("uploadedBy", "name username").sort({ createdAt: -1 }).limit(50);
   res.json({ imports });
@@ -97,4 +109,4 @@ async function stats(req, res) {
   res.json({ totalLeads, newLeads, assignedUsers: assignedUsers.length, completedImports, recentImports });
 }
 
-module.exports = { importLeads, listLeads, listImports, stats };
+module.exports = { importLeads, listLeads, listAssignedLeads, listImports, stats };
