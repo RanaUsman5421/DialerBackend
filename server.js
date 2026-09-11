@@ -23,7 +23,7 @@ app.use(cors({ origin: allowedOrigin }));
 app.use(express.json({ limit: "64kb" }));
 
 app.get("/", (_req, res) => res.json({ name: "Lionex Bridge", status: "ok" }));
-app.get("/health", (_req, res) => res.json({ ok: true, mongo: mongoose.connection.readyState === 1, now: new Date().toISOString() }));
+app.get("/health", (_req, res) => res.json({ ok: true, mongo: mongoose.connection.readyState === 1, authConfigured: Boolean(process.env.JWT_SECRET), now: new Date().toISOString() }));
 app.post("/api/auth/signup", auth.signup);
 app.post("/api/auth/login", auth.login);
 
@@ -120,6 +120,7 @@ io.on("connection", (socket) => {
 });
 
 async function start() {
+  if (!process.env.JWT_SECRET) console.error("CONFIG ERROR: JWT_SECRET is missing; login/signup will be unavailable");
   await connectDB();
   server.listen(port, "0.0.0.0", () => console.log(`Lionex Bridge listening on http://0.0.0.0:${port}`));
 }
