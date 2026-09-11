@@ -1,0 +1,22 @@
+
+{
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "check": "node --check server.js && node --check services/pairingStore.js",
+    "test:pairing": "node scripts/pairingIntegrationCheck.js",
+    "import-users": "node scripts/importUsers.js"
+  },
+
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^9.10.0",
+    "nodemon": "^3.1.14",
+    "socket.io": "^4.8.1"
+  },
+  "devDependencies": { "socket.io-client": "^4.8.1" }
+}
