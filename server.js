@@ -10,7 +10,9 @@ dotenv.config();
 const connectDB = require("./db/connect");
 const Device = require("./models/Device");
 const pairing = require("./services/pairingStore");
-const auth = require("./contollers/auth");
+const authRoutes = require("./routes/auth");
+const adminRoutes = require("./routes/admin");
+const leadRoutes = require("./routes/leads");
 const { requireAuth, verifyToken } = require("./middleware/auth");
 
 const app = express();
@@ -24,8 +26,9 @@ app.use(express.json({ limit: "64kb" }));
 
 app.get("/", (_req, res) => res.json({ name: "Lionex Bridge", status: "ok" }));
 app.get("/health", (_req, res) => res.json({ ok: true, mongo: mongoose.connection.readyState === 1, authConfigured: Boolean(process.env.JWT_SECRET), now: new Date().toISOString() }));
-app.post("/api/auth/signup", auth.signup);
-app.post("/api/auth/login", auth.login);
+app.use("/api/auth", authRoutes);
+app.use("/api/admin", adminRoutes);
+app.use("/api/admin/leads", leadRoutes);
 
 app.post("/api/pairing/sessions", requireAuth, async (req, res) => {
   try {
@@ -39,6 +42,13 @@ app.get("/api/pairing/sessions/:id", async (req, res) => {
   const session = await pairing.get(req.params.id);
   if (!pairing.verifyDesktop(session, req.get("x-desktop-token"))) return res.status(404).json({ error: "Pairing session not found" });
   res.json(pairing.publicSession(session));
+});
+
+app.use((error, _req, res, _next) => {
+  if (error?.code === "LIMIT_FILE_SIZE") return res.status(413).json({ error: "Spreadsheet must be 5 MB or smaller" });
+  if (error?.message?.includes(".xls")) return res.status(400).json({ error: error.message });
+  console.error("[http]", error);
+  res.status(500).json({ error: "Unexpected server error" });
 });
 
 function acknowledge(ack, payload) { if (typeof ack === "function") ack(payload); }

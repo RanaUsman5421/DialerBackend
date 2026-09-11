@@ -1,15 +1,14 @@
-
 {
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "check": "node --check server.js && node --check services/pairingStore.js",
+    "check": "node --check server.js && node --check services/pairingStore.js && node --check contollers/auth.js && node --check contollers/adminAuth.js && node --check contollers/admin.js && node --check contollers/leads.js && node --check routes/auth.js && node --check routes/admin.js && node --check routes/leads.js",
     "test:pairing": "node scripts/pairingIntegrationCheck.js",
     "test:auth": "node scripts/authIntegrationCheck.js",
     "test:persistence": "node scripts/pairingPersistenceCheck.js",
-    "import-users": "node scripts/importUsers.js"
+    "import-users": "node scripts/importUsers.js",
+    "seed:admin": "node scripts/seedAdmin.js"
   },
-
   "dependencies": {
     "bcryptjs": "^3.0.2",
     "cors": "^2.8.5",
@@ -17,8 +16,12 @@
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^9.10.0",
+    "multer": "^2.3.0",
     "nodemon": "^3.1.14",
-    "socket.io": "^4.8.1"
+    "socket.io": "^4.8.1",
+    "xlsx": "^0.18.5"
   },
-  "devDependencies": { "socket.io-client": "^4.8.1" }
+  "devDependencies": {
+    "socket.io-client": "^4.8.1"
+  }
 }

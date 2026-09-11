@@ -3,7 +3,14 @@ const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const publicUser = (user) => ({ id: user._id.toString(), name: user.name, email: user.email });
+const publicUser = (user) => ({
+  id: user._id.toString(),
+  name: user.name,
+  username: user.username || null,
+  email: user.email,
+  role: user.role || "user",
+  isActive: user.isActive !== false,
+});
 const ensureAuthConfigured = () => {
   if (!process.env.JWT_SECRET) {
     const error = new Error("JWT_SECRET is not configured");
@@ -13,7 +20,7 @@ const ensureAuthConfigured = () => {
 };
 const issueToken = (user) => {
   ensureAuthConfigured();
-  return jwt.sign({ sub: user._id.toString(), email: user.email }, process.env.JWT_SECRET, { expiresIn: "30d" });
+  return jwt.sign({ sub: user._id.toString() }, process.env.JWT_SECRET, { expiresIn: "12h" });
 };
 
 function authFailure(res, error, fallback) {
@@ -39,7 +46,7 @@ async function signup(req, res) {
     if (await User.exists({ email })) return res.status(409).json({ error: "An account with this email already exists" });
     // Mongoose allocates _id before save. Validate JWT configuration before
     // persistence so a failed token operation cannot leave a half-created user.
-    const user = new User({ name, email, password: await bcrypt.hash(password, 12) });
+    const user = new User({ name, email, password: await bcrypt.hash(password, 12), role: "user" });
     const token = issueToken(user);
     await user.save();
     res.status(201).json({ token, user: publicUser(user) });
@@ -54,11 +61,15 @@ async function login(req, res) {
     const email = String(req.body.email || "").trim().toLowerCase();
     const password = String(req.body.password || "");
     const user = await User.findOne({ email }).select("+password");
-    if (!user || !(await bcrypt.compare(password, user.password))) return res.status(401).json({ error: "Invalid email or password" });
+    if (!user || user.isActive === false || !(await bcrypt.compare(password, user.password))) return res.status(401).json({ error: "Invalid email or password" });
     res.json({ token: issueToken(user), user: publicUser(user) });
   } catch (error) {
     authFailure(res, error, "Unable to sign in");
   }
 }
 
-module.exports = { signup, login };
+function me(req, res) {
+  res.json({ user: publicUser(req.user) });
+}
+
+module.exports = { signup, login, me, publicUser, issueToken, ensureAuthConfigured };
