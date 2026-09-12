@@ -86,12 +86,16 @@ const valid=(brand='Alpha',phone='3054447156')=>({brandName:brand,phone,email:''
  for(const [queue,index] of [['pending',0],['inProgress',1],['closed',2],['dead',3]]){const filtered=await api(`/api/leads?q=QueueFixture&queue=${queue}`);assert.equal(filtered.data.pagination.total,1);assert.equal(filtered.data.leads[0]._id,String(queueFixture[index]._id));assert.deepEqual(filtered.data.queueCounts,queueAll.data.queueCounts);}
  assert.deepEqual((await api('/api/leads?q=QueueFixture','Uploader')).data.queueCounts,{pending:0,inProgress:0,closed:0,dead:0});
  assert.equal((await api('/api/leads?queue=invalid')).status,400);
- const filters=queueAll.data.filterSections.flatMap(section=>section.filters);assert.equal(filters.length,38);assert.equal(new Set(filters.map(filter=>filter.id)).size,38);assert.equal(filters.find(filter=>filter.id==='all').count,4);
+ const filters=queueAll.data.filterSections.flatMap(section=>section.filters);assert.equal(filters.length,43);assert.equal(new Set(filters.map(filter=>filter.id)).size,43);assert.equal(filters.find(filter=>filter.id==='all').count,4);
  for(const id of ['busy','outbound','active','interested','premium','proposal-sent','registered','dead-lead','future-follow']){assert.equal(filters.find(filter=>filter.id===id).count,1,id);const matches=await api(`/api/leads?q=QueueFixture&leadFilter=${id}`);assert.equal(matches.data.pagination.total,1,id);}
  assert.equal((await api('/api/leads?q=QueueFixture&leadFilter=busy&queue=inProgress')).data.pagination.total,0);
  assert.equal((await api('/api/leads?q=QueueFixture&leadFilter=busy&queue=pending')).data.pagination.total,1);
  assert((await api('/api/leads?q=QueueFixture','Uploader')).data.filterSections.flatMap(section=>section.filters).every(filter=>filter.count===0));
  assert.equal((await api('/api/leads?leadFilter=invalid')).status,400);
+ for(const [id,expected] of [['client-assigned',1],['client-dead',1],['client-basic',0],['client-standard',0],['client-premium',4]]){assert.equal(filters.find(filter=>filter.id===id).count,expected,id);assert.equal((await api(`/api/leads?q=QueueFixture&leadFilter=${id}`)).data.pagination.total,expected,id);}
+ await Lead.updateOne({_id:queueFixture[0]._id},{$set:{leadCategory:'Basic'}});await Lead.updateOne({_id:queueFixture[2]._id},{$set:{leadCategory:'Standard'}});
+ const typedClients=(await api('/api/leads?q=QueueFixture')).data.filterSections.find(section=>section.id==='clients').filters;assert.equal(typedClients.find(filter=>filter.id==='client-basic').count,1);assert.equal(typedClients.find(filter=>filter.id==='client-standard').count,1);assert.equal(typedClients.find(filter=>filter.id==='client-premium').count,2);
+
 
  const team=await api('/api/leads/team-performance');assert.equal(team.status,200);assert.equal(team.data.pagination.total,6);
  assert(team.data.users.every(user=>!('password' in user)&&!('token' in user)&&user.createdAt));
