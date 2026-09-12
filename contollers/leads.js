@@ -7,6 +7,7 @@ const Rejected=require('../models/RejectedLead');
 const Activity=require('../models/LeadActivity');
 const User=require('../models/User');
 const CallAttempt=require('../models/CallAttempt');
+const {leadFilters,filterCounts}=require('../services/leadFilters');
 const {fields,key,brandKey,validateRow}=require('../services/leadValidation');
 const {roleOf}=require('../middleware/auth');
 const isAdmin=req=>roleOf(req.user)==='admin';
@@ -99,11 +100,15 @@ async function listLeads(req,res) {
  if(req.query.status)filter.status=req.query.status;
  if(req.query.q){const q=String(req.query.q).slice(0,100).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');filter.$or=[{brandName:{$regex:q,$options:'i'}},{phone:{$regex:q}}];}
  const queueBase={...filter};
+ const sections=leadFilters();
+ const chosenFilter=sections.flatMap(section=>section.filters).find(item=>item.id===req.query.leadFilter);
+ if(req.query.leadFilter&&!chosenFilter)fail(400,'Invalid lead filter');
+ if(chosenFilter)filter.$and=[chosenFilter.match];
  const queues={pending:{assignedTo:null,status:{$nin:['won','lost']}},inProgress:{assignedTo:{$ne:null},status:{$nin:['won','lost']}},closed:{status:'won'},dead:{status:'lost'}};
- if(req.query.queue){if(!queues[req.query.queue])fail(400,'Invalid lead queue');filter.$and=[queues[req.query.queue]];}
- const [leads,total,counts]=await Promise.all([Lead.find(filter).populate('assignedTo','name username email').populate('group','name').sort({createdAt:-1}).skip((page-1)*limit).limit(limit).lean(),Lead.countDocuments(filter),Lead.aggregate([{$match:queueBase},{$group:{_id:{$switch:{branches:[{case:{$eq:['$status','won']},then:'closed'},{case:{$eq:['$status','lost']},then:'dead'},{case:{$ne:[{$ifNull:['$assignedTo',null]},null]},then:'inProgress'}],default:'pending'}},count:{$sum:1}}}])]);
+ if(req.query.queue){if(!queues[req.query.queue])fail(400,'Invalid lead queue');filter.$and=[...(filter.$and||[]),queues[req.query.queue]];}
+ const [leads,total,counts,filterSections]=await Promise.all([Lead.find(filter).populate('assignedTo','name username email').populate('group','name').sort({createdAt:-1}).skip((page-1)*limit).limit(limit).lean(),Lead.countDocuments(filter),Lead.aggregate([{$match:queueBase},{$group:{_id:{$switch:{branches:[{case:{$eq:['$status','won']},then:'closed'},{case:{$eq:['$status','lost']},then:'dead'},{case:{$ne:[{$ifNull:['$assignedTo',null]},null]},then:'inProgress'}],default:'pending'}},count:{$sum:1}}}]),filterCounts(Lead,queueBase,sections)]);
  const queueCounts={pending:0,inProgress:0,closed:0,dead:0};for(const item of counts)queueCounts[item._id]=item.count;
- res.json({leads,queueCounts,pagination:{page,limit,total,pages:Math.max(1,Math.ceil(total/limit))}});
+ res.json({leads,queueCounts,filterSections,pagination:{page,limit,total,pages:Math.max(1,Math.ceil(total/limit))}});
 }
 async function listAssignedLeads(req,res) {
  const {page,limit}=pageOf(req), filter={assignedTo:req.user._id};
@@ -209,11 +214,12 @@ async function updateLead(req,res) {
   if(!lead)fail(409,'This lead is no longer assigned to your account');
   if((lead.version||0)!==body.version||(lead.assignmentVersion||0)!==body.assignmentVersion)fail(409,'Lead changed since your last sync. Refresh and review before retrying.');
   const before=lead.status;
+  if(body.callAttempt){lead.lastCallOutcome=body.callAttempt.outcome;lead.lastCallDuration=Math.max(0,Number(body.callAttempt.duration)||0);lead.lastCallDirection=['OUTGOING','INCOMING'].includes(body.callAttempt.direction)?body.callAttempt.direction:undefined;}
   for(const name of ['status','callStatus','leadCategory','activity'])if(body[name]!==undefined)lead[name]=String(body[name]).slice(0,120);
   if(body.followUpAt!==undefined)lead.followUpAt=followUpAt;
   lead.version=(lead.version||0)+1;await lead.save({session});
-  if(body.callAttempt)await CallAttempt.create([{lead:lead._id,actor:req.user._id,phone:lead.phone,operationId,outcome:body.callAttempt.outcome,endedAt:body.callAttempt.endedAt,duration:Math.max(0,Number(body.callAttempt.duration)||0),remark:String(body.remark||'')}],{session});
-  [event]=await Activity.create([{lead:lead._id,actor:req.user._id,type:body.callAttempt?'call':'updated',operationId,details:{appliedVersion:lead.version,assignmentVersion:lead.assignmentVersion,fromStatus:before,toStatus:lead.status,remark:String(body.remark||''),callStatus:lead.callStatus,leadCategory:lead.leadCategory,activity:lead.activity,followUpAt:lead.followUpAt,callAttempt:body.callAttempt?{outcome:body.callAttempt.outcome,endedAt:body.callAttempt.endedAt,duration:Math.max(0,Number(body.callAttempt.duration)||0)}:undefined}}],{session});
+  if(body.callAttempt)await CallAttempt.create([{lead:lead._id,actor:req.user._id,phone:lead.phone,operationId,outcome:body.callAttempt.outcome,direction:['OUTGOING','INCOMING'].includes(body.callAttempt.direction)?body.callAttempt.direction:undefined,endedAt:body.callAttempt.endedAt,duration:Math.max(0,Number(body.callAttempt.duration)||0),remark:String(body.remark||'')}],{session});
+  [event]=await Activity.create([{lead:lead._id,actor:req.user._id,type:body.callAttempt?'call':'updated',operationId,details:{appliedVersion:lead.version,assignmentVersion:lead.assignmentVersion,fromStatus:before,toStatus:lead.status,remark:String(body.remark||''),callStatus:lead.callStatus,leadCategory:lead.leadCategory,activity:lead.activity,followUpAt:lead.followUpAt,callAttempt:body.callAttempt?{outcome:body.callAttempt.outcome,direction:lead.lastCallDirection,endedAt:body.callAttempt.endedAt,duration:Math.max(0,Number(body.callAttempt.duration)||0)}:undefined}}],{session});
  });
  res.json({lead,event,message:'Synced'});
 }

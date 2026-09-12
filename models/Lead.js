@@ -7,7 +7,7 @@ const schema=new mongoose.Schema({
  matureConfidence:{type:Number,min:0,max:100},productDetails:String,websiteUrl:String,socialLink:String,
  city:{type:String,default:''},source:String,notes:{type:String,default:''},
  status:{type:String,enum:['new','contacted','qualified','won','lost'],default:'new'},callStatus:String,leadCategory:String,activity:String,
- followUpAt:Date,assignedTo:{...ref,default:null},uploadedBy:{...ref,required:true},uploadedAt:{type:Date,default:Date.now},assignedBy:ref,assignedAt:Date,
+ lastCallOutcome:String,lastCallDirection:{type:String,enum:['OUTGOING','INCOMING']},lastCallDuration:Number,followUpAt:Date,assignedTo:{...ref,default:null},uploadedBy:{...ref,required:true},uploadedAt:{type:Date,default:Date.now},assignedBy:ref,assignedAt:Date,
  group:{type:mongoose.Schema.Types.ObjectId,ref:'LeadGroup'},importBatch:{type:mongoose.Schema.Types.ObjectId,ref:'LeadImport'},sourceRow:Number,
  version:{type:Number,default:0},assignmentVersion:{type:Number,default:0},duplicateException:{type:Boolean,default:false},
  extra:{type:Map,of:String,default:{}}

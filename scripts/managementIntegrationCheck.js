@@ -64,10 +64,10 @@ const valid=(brand='Alpha',phone='3054447156')=>({brandName:brand,phone,email:''
  assert.equal((await api('/api/leads/assign','Uploader','POST',{leadIds:[lead._id],assignedTo:caller._id})).status,403);
  assert.equal((await api('/api/leads/assign','Admin','POST',{leadIds:[lead._id],assignedTo:caller._id})).status,200);
  let assigned=await api('/api/leads/assigned','Caller');assert.equal(assigned.data.leads.length,1);lead=assigned.data.leads[0];assert.equal(lead.assignmentVersion,1);
- const update={operationId:'test-operation-123',version:lead.version,assignmentVersion:lead.assignmentVersion,status:'contacted',remark:'Spoke to owner',followUpAt:new Date(Date.now()-60000).toISOString(),callAttempt:{outcome:'Connected',endedAt:new Date().toISOString(),duration:30}};
+ const update={operationId:'test-operation-123',version:lead.version,assignmentVersion:lead.assignmentVersion,status:'contacted',remark:'Spoke to owner',followUpAt:new Date(Date.now()-60000).toISOString(),callAttempt:{outcome:'Connected',direction:'OUTGOING',endedAt:new Date().toISOString(),duration:30}};
  assert.equal((await api(`/api/leads/${lead._id}`,'Second','PATCH',update)).status,409);
  assert.equal((await api(`/api/leads/${lead._id}`,'Caller','PATCH',{...update,callAttempt:{outcome:''}})).status,400);
- const saved=await api(`/api/leads/${lead._id}`,'Caller','PATCH',update);assert.equal(saved.status,200,JSON.stringify(saved.data));assert.equal(saved.data.lead.status,'contacted');
+ const saved=await api(`/api/leads/${lead._id}`,'Caller','PATCH',update);assert.equal(saved.status,200,JSON.stringify(saved.data));assert.equal(saved.data.lead.status,'contacted');assert.equal(saved.data.lead.lastCallDirection,'OUTGOING');assert.equal(saved.data.lead.lastCallOutcome,'Connected');
  assert.equal((await api(`/api/leads/${lead._id}`,'Caller','PATCH',update)).status,200);assert.equal(await Activity.countDocuments({operationId:update.operationId}),1);
  assert.equal((await api(`/api/leads/${lead._id}`,'Caller','PATCH',{...update,operationId:'stale-operation-123'})).status,409);
  const load=await api('/api/leads/workload');const counts=load.data.workload.find(user=>user.id===String(caller._id));assert.equal(counts.pending,1);assert.equal(counts.overdue,1);
@@ -80,10 +80,19 @@ const valid=(brand='Alpha',phone='3054447156')=>({brandName:brand,phone,email:''
  const began=performance.now();const bulk=await api('/api/leads/import','Uploader','POST',bulkForm);assert.equal(bulk.status,201);assert.equal(bulk.data.summary.accepted,1000);console.log(`1000-row local import accepted in ${Math.round(performance.now()-began)}ms.`);
  const matches=await api(`/api/leads/rejected/${dup.data.rejection._id}/matches`);assert.equal(matches.status,200);assert.equal((await api(`/api/leads/rejected/${dup.data.rejection._id}/matches`,'Uploader')).status,403);
  const queueFixture=await Lead.create(['new','new','won','lost'].map((status,i)=>({...validateRow(valid(`QueueFixture ${i}`,String(3070000001+i))).data,status,uploadedBy:other._id,group:lead.group._id||lead.group,assignedTo:i===1?caller._id:null})));
+ await Lead.updateOne({_id:queueFixture[0]._id},{$set:{callStatus:'Line Busy',lastCallOutcome:'Busy',lastCallDirection:'OUTGOING',lastCallDuration:75,activity:'Proposal Sent'}});
+ await Lead.updateOne({_id:queueFixture[1]._id},{$set:{callStatus:'Interested',leadCategory:'Premium',followUpAt:new Date(Date.now()+15*86400000)}});
  const queueAll=await api('/api/leads?q=QueueFixture');assert.deepEqual(queueAll.data.queueCounts,{pending:1,inProgress:1,closed:1,dead:1});assert.equal(queueAll.data.pagination.total,4);
  for(const [queue,index] of [['pending',0],['inProgress',1],['closed',2],['dead',3]]){const filtered=await api(`/api/leads?q=QueueFixture&queue=${queue}`);assert.equal(filtered.data.pagination.total,1);assert.equal(filtered.data.leads[0]._id,String(queueFixture[index]._id));assert.deepEqual(filtered.data.queueCounts,queueAll.data.queueCounts);}
  assert.deepEqual((await api('/api/leads?q=QueueFixture','Uploader')).data.queueCounts,{pending:0,inProgress:0,closed:0,dead:0});
  assert.equal((await api('/api/leads?queue=invalid')).status,400);
+ const filters=queueAll.data.filterSections.flatMap(section=>section.filters);assert.equal(filters.length,38);assert.equal(new Set(filters.map(filter=>filter.id)).size,38);assert.equal(filters.find(filter=>filter.id==='all').count,4);
+ for(const id of ['busy','outbound','active','interested','premium','proposal-sent','registered','dead-lead','future-follow']){assert.equal(filters.find(filter=>filter.id===id).count,1,id);const matches=await api(`/api/leads?q=QueueFixture&leadFilter=${id}`);assert.equal(matches.data.pagination.total,1,id);}
+ assert.equal((await api('/api/leads?q=QueueFixture&leadFilter=busy&queue=inProgress')).data.pagination.total,0);
+ assert.equal((await api('/api/leads?q=QueueFixture&leadFilter=busy&queue=pending')).data.pagination.total,1);
+ assert((await api('/api/leads?q=QueueFixture','Uploader')).data.filterSections.flatMap(section=>section.filters).every(filter=>filter.count===0));
+ assert.equal((await api('/api/leads?leadFilter=invalid')).status,400);
+
  const cards=await api('/api/leads/groups');assert(cards.data.groups.every(group=>group.total===group.assigned+group.remaining));
  assert.equal((await api(`/api/admin/users/${second._id}`,'Admin','PATCH',{accountState:'suspended'})).status,200);
  assert.equal((await api('/api/leads/assigned','Second')).status,401);
