@@ -93,6 +93,17 @@ const valid=(brand='Alpha',phone='3054447156')=>({brandName:brand,phone,email:''
  assert((await api('/api/leads?q=QueueFixture','Uploader')).data.filterSections.flatMap(section=>section.filters).every(filter=>filter.count===0));
  assert.equal((await api('/api/leads?leadFilter=invalid')).status,400);
 
+ const team=await api('/api/leads/team-performance');assert.equal(team.status,200);assert.equal(team.data.pagination.total,6);
+ assert(team.data.users.every(user=>!('password' in user)&&!('token' in user)&&user.createdAt));
+ const secondPerformance=team.data.users.find(user=>user.id===String(second._id));assert.equal(secondPerformance.metrics.assigned,1);assert.equal(secondPerformance.metrics.worked,1);assert.equal(secondPerformance.metrics.pending,1);assert.equal(secondPerformance.metrics.overdue,1);assert.equal(secondPerformance.metrics.assignedGroups,1);assert.equal(secondPerformance.metrics.assignedToThem,1);
+ const callerPerformance=team.data.users.find(user=>user.id===String(caller._id));assert.equal(callerPerformance.metrics.callAttempts,1);assert.equal(callerPerformance.metrics.assigned,1);assert.equal(callerPerformance.metrics.assignedToThem,1);
+ assert.equal(team.data.users.find(user=>user.id===String(admin._id)).metrics.assignedByThem,1);
+ assert.equal(team.data.users.find(user=>user.id===String(other._id)).metrics.uploaded,4);
+ assert.equal((await api('/api/leads/team-performance','Uploader')).status,403);assert.equal((await api('/api/leads/team-performance','Caller')).status,403);
+ const searchedTeam=await api('/api/leads/team-performance?q=new.agent');assert.equal(searchedTeam.data.pagination.total,1);assert.equal(searchedTeam.data.users[0].username,'new.agent');
+ assert.equal((await api('/api/leads/team-performance?role=calling_agent')).data.pagination.total,2);
+ assert.equal((await api('/api/leads/team-performance?role=invalid')).status,400);
+ assert.equal((await api('/api/leads/team-performance?q=nonexistent')).data.pagination.total,0);
  const cards=await api('/api/leads/groups');assert(cards.data.groups.every(group=>group.total===group.assigned+group.remaining));
  assert.equal((await api(`/api/admin/users/${second._id}`,'Admin','PATCH',{accountState:'suspended'})).status,200);
  assert.equal((await api('/api/leads/assigned','Second')).status,401);

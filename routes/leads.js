@@ -22,6 +22,7 @@ router.get('/:id/history',requireRoles('admin','leads_agent','calling_agent'),le
 router.patch('/call-record',requireRoles('calling_agent'),leads.recordCall);
 router.patch('/:id',requireRoles('admin','calling_agent'),leads.updateLead);
 router.get('/workload',requireAdmin,leads.workload);
+router.get('/team-performance',requireAdmin,require('../contollers/teamPerformance').teamPerformance);
 router.post('/assign',requireAdmin,leads.assign);
 router.get('/groups',web,leads.groups);
 router.get('/rejected/export',web,leads.exportRejected);
