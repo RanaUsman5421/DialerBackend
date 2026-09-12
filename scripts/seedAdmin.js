@@ -20,10 +20,11 @@ async function run() {
     existing.password = passwordHash;
     existing.role = "admin";
     existing.isActive = true;
+    existing.accountState = "active";
     await existing.save();
     console.log(`Admin updated: ${username}`);
   } else {
-    await User.create({ name, username, email, password: passwordHash, role: "admin", isActive: true });
+    await User.create({ name, username, email, password: passwordHash, role: "admin", isActive: true, accountState: "active" });
     console.log(`Admin created: ${username}`);
   }
 }

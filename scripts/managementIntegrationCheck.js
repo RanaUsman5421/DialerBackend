@@ -40,7 +40,7 @@ const valid=(brand='Alpha',phone='3054447156')=>({brandName:brand,phone,email:''
  assert.equal((await api(`/api/admin/users/${signup.data.user.id}`,'Admin','PATCH',{accountState:'active'})).status,200);
  assert.equal((await api('/api/admin/auth/login',null,'POST',{identity:'new.agent',password:'test-password-123'})).status,200);
  const create=await api('/api/leads/manual','Uploader','POST',{groupName:'Campaign',lead:valid()});assert.equal(create.status,201);let lead=create.data.lead;assert.equal(lead.assignedTo,null);assert.equal(lead.phone,'+923054447156');assert.equal(lead.matureConfidence,50);
- const dup=await api('/api/leads/manual','Uploader','POST',{groupName:' campaign ',lead:valid(' alpha ','03051111111')});assert.equal(dup.status,202);assert.equal(dup.data.rejection.reason,'duplicate');
+ const dup=await api('/api/leads/manual','Uploader','POST',{groupName:' campaign ',lead:valid(' alpha ','03051111111')});assert.equal(dup.status,202);assert.equal(dup.data.rejection.reason,'duplicate');assert.deepEqual(dup.data.rejection.errors,['Brand Name already exists']);
  assert.equal((await Group.countDocuments()),1);
  const invalid=await api('/api/leads/manual','Uploader','POST',{groupName:'Campaign',lead:{...valid('Beta','3052222222'),socialLink:''}});assert.equal(invalid.status,202);
  const rejectedId=invalid.data.rejection._id;
@@ -52,8 +52,14 @@ const valid=(brand='Alpha',phone='3054447156')=>({brandName:brand,phone,email:''
  const book=XLSX.utils.book_new();const headers=fields.map(f=>f[1]);const toRow=row=>fields.map(([name])=>row[name]);XLSX.utils.book_append_sheet(book,XLSX.utils.aoa_to_sheet([headers,toRow(valid('Excel Good','3055555555')),toRow({...valid('Excel Bad','3056666666'),socialLink:''}),toRow(valid('Alpha','3057777777')),toRow(valid('Excel Good','3055555555'))]),'Leads');
  const form=new FormData();form.append('groupName','Campaign');form.append('file',new Blob([XLSX.write(book,{type:'buffer',bookType:'xlsx'})]),'leads.xlsx');
  const imported=await api('/api/leads/import','Uploader','POST',form);assert.equal(imported.status,201,JSON.stringify(imported.data));assert.deepEqual(imported.data.summary,{totalRows:4,accepted:1,rejected:3,duplicates:2});
- const queue=await api('/api/leads/rejected','Uploader');assert(queue.data.rejections.some(row=>row.sourceRow===3));
- const download=await api('/api/leads/rejected/export','Uploader');assert.equal(download.status,200);assert(download.data.includes('Rejection Reasons'));assert(download.data.includes('Any Social Link is required'));
+ assert.equal(imported.data.rejections.length,3);assert.equal(imported.data.rejections[0].sourceRow,3);assert(imported.data.rejections[0].errors.some(error=>error.includes('Social Link')));
+ const batchQueue=await api(`/api/leads/rejected?importBatch=${imported.data.import._id}`,'Uploader');assert.equal(batchQueue.data.pagination.total,3);
+ assert.equal((await api(`/api/leads/rejected?importBatch=${imported.data.import._id}`,'Other Uploader')).data.pagination.total,0);
+ assert.equal((await api('/api/leads/rejected?importBatch=bad','Uploader')).status,400);
+ const fixedExcel=await api(`/api/leads/rejected/${imported.data.rejections[0]._id}/resubmit`,'Uploader','POST',{lead:valid('Excel Bad','3056666666')});assert.equal(fixedExcel.status,200);
+ assert.equal((await api(`/api/leads/rejected?importBatch=${imported.data.import._id}`,'Uploader')).data.pagination.total,2);
+ const queue=await api('/api/leads/rejected','Uploader');assert(queue.data.rejections.some(row=>row.importBatch===imported.data.import._id));
+ const download=await api('/api/leads/rejected/export','Uploader');assert.equal(download.status,200);assert(download.data.includes('Rejection Reasons'));assert(download.data.includes('already exists'));
  assert.equal((await api('/api/leads','Other Uploader')).data.pagination.total,0);
  assert.equal((await api('/api/leads/assign','Uploader','POST',{leadIds:[lead._id],assignedTo:caller._id})).status,403);
  assert.equal((await api('/api/leads/assign','Admin','POST',{leadIds:[lead._id],assignedTo:caller._id})).status,200);
@@ -73,6 +79,11 @@ const valid=(brand='Alpha',phone='3054447156')=>({brandName:brand,phone,email:''
  const bulkForm=new FormData();bulkForm.append('groupName','Large Batch');bulkForm.append('file',new Blob([XLSX.write(bulkBook,{type:'buffer',bookType:'xlsx'})]),'batch.xlsx');
  const began=performance.now();const bulk=await api('/api/leads/import','Uploader','POST',bulkForm);assert.equal(bulk.status,201);assert.equal(bulk.data.summary.accepted,1000);console.log(`1000-row local import accepted in ${Math.round(performance.now()-began)}ms.`);
  const matches=await api(`/api/leads/rejected/${dup.data.rejection._id}/matches`);assert.equal(matches.status,200);assert.equal((await api(`/api/leads/rejected/${dup.data.rejection._id}/matches`,'Uploader')).status,403);
+ const queueFixture=await Lead.create(['new','new','won','lost'].map((status,i)=>({...validateRow(valid(`QueueFixture ${i}`,String(3070000001+i))).data,status,uploadedBy:other._id,group:lead.group._id||lead.group,assignedTo:i===1?caller._id:null})));
+ const queueAll=await api('/api/leads?q=QueueFixture');assert.deepEqual(queueAll.data.queueCounts,{pending:1,inProgress:1,closed:1,dead:1});assert.equal(queueAll.data.pagination.total,4);
+ for(const [queue,index] of [['pending',0],['inProgress',1],['closed',2],['dead',3]]){const filtered=await api(`/api/leads?q=QueueFixture&queue=${queue}`);assert.equal(filtered.data.pagination.total,1);assert.equal(filtered.data.leads[0]._id,String(queueFixture[index]._id));assert.deepEqual(filtered.data.queueCounts,queueAll.data.queueCounts);}
+ assert.deepEqual((await api('/api/leads?q=QueueFixture','Uploader')).data.queueCounts,{pending:0,inProgress:0,closed:0,dead:0});
+ assert.equal((await api('/api/leads?queue=invalid')).status,400);
  const cards=await api('/api/leads/groups');assert(cards.data.groups.every(group=>group.total===group.assigned+group.remaining));
  assert.equal((await api(`/api/admin/users/${second._id}`,'Admin','PATCH',{accountState:'suspended'})).status,200);
  assert.equal((await api('/api/leads/assigned','Second')).status,401);

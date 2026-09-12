@@ -22,7 +22,13 @@ async function groupFor(name,user) {
  catch(error){if(error.code===11000)return Group.findOne({normalizedName:brandKey(name)});throw error;}
 }
 async function duplicate(data,session) {
- return Lead.findOne({$or:[{phoneNormalized:data.phoneNormalized},{brandNormalized:data.brandNormalized}]}).select('_id brandName phone').session(session||null).lean();
+ return Lead.findOne({$or:[{phoneNormalized:data.phoneNormalized},{brandNormalized:data.brandNormalized}]}).select('_id brandName phone phoneNormalized brandNormalized').session(session||null).lean();
+}
+function duplicateErrors(data,existing) {
+ const errors=[];
+ if(existing && (existing.phoneNormalized===data.phoneNormalized || existing.phone===data.phone))errors.push('Phone No already exists');
+ if(existing && (existing.brandNormalized===data.brandNormalized || brandKey(existing.brandName)===data.brandNormalized))errors.push('Brand Name already exists');
+ return errors.length?errors:['Phone No or Brand Name already exists'];
 }
 function document(data,meta,exception=false) {
  return {...data,...meta,source:data.extractedFrom,status:'new',assignedTo:null,version:0,assignmentVersion:0,
@@ -56,7 +62,7 @@ async function importLeads(req,res) {
    const reject=(item,errors,reason)=>{rejects.push({raw:item.raw,errors,reason,uploadedBy:req.user._id,group:group._id,importBatch:batch._id,sourceRow:item.row,uploadedAt:batch.createdAt});rejected++;if(reason==='duplicate')duplicates++;};
    for(const item of chunk) {
     if(item.errors.length){reject(item,item.errors,'validation');continue;}
-    if(phones.has(item.data.phoneNormalized)||brands.has(item.data.brandNormalized)){reject(item,['Phone number or Brand Name already exists'],'duplicate');continue;}
+    if(phones.has(item.data.phoneNormalized)||brands.has(item.data.brandNormalized)){reject(item,[...(phones.has(item.data.phoneNormalized)?['Phone No already exists in the database or this file']:[]),...(brands.has(item.data.brandNormalized)?['Brand Name already exists in the database or this file']:[])],'duplicate');continue;}
     phones.add(item.data.phoneNormalized);brands.add(item.data.brandNormalized);
     candidates.push({item,doc:document(item.data,{uploadedBy:req.user._id,group:group._id,importBatch:batch._id,sourceRow:item.row,uploadedAt:batch.createdAt})});
    }
@@ -72,13 +78,14 @@ async function importLeads(req,res) {
    await LeadImport.updateOne({_id:batch._id},{$set:{importedRows:accepted,skippedRows:rejected,duplicateRows:duplicates}});
   }
   batch.importedRows=accepted;batch.skippedRows=rejected;batch.duplicateRows=duplicates;batch.status='completed';batch.errors=missing.map(header=>({row:1,message:`Missing column: ${header}`}));await batch.save();
-  res.status(201).json({import:batch,message:`${accepted} accepted, ${rejected} rejected (${duplicates} duplicates)`,summary:{totalRows:rows.length,accepted,rejected,duplicates}});
+  const rejections=await Rejected.find({importBatch:batch._id,uploadedBy:req.user._id,state:'rejected'}).sort({sourceRow:1,_id:1}).limit(25).lean();
+  res.status(201).json({import:batch,rejections,message:`${accepted} accepted, ${rejected} rejected (${duplicates} duplicates)`,summary:{totalRows:rows.length,accepted,rejected,duplicates}});
  }catch(error){await LeadImport.updateOne({_id:batch._id},{$set:{status:'failed',importedRows:accepted,skippedRows:rejected,duplicateRows:duplicates}});throw error;}
 }
 async function manualLead(req,res) {
  const group=await groupFor(req.body.groupName,req.user._id), result=validateRow(req.body.lead||{});
  let reason='validation',errors=result.errors;
- if(!errors.length&&await duplicate(result.data)){reason='duplicate';errors=['Phone number or Brand Name already exists'];}
+ if(!errors.length){const match=await duplicate(result.data);if(match){reason='duplicate';errors=duplicateErrors(result.data,match);}}
  if(errors.length){const rejection=await Rejected.create({raw:result.raw,errors,reason,uploadedBy:req.user._id,group:group._id});return res.status(202).json({rejection,message:'Lead added to your rejected queue'});}
  try{const lead=await Lead.create(document(result.data,{uploadedBy:req.user._id,group:group._id}));res.status(201).json({lead,message:'Lead added to the unassigned pool'});}
  catch(error){if(error.code!==11000)throw error;const rejection=await Rejected.create({raw:result.raw,errors:['Phone number or Brand Name already exists'],reason:'duplicate',uploadedBy:req.user._id,group:group._id});res.status(202).json({rejection,message:'Duplicate added to your rejected queue'});}
@@ -91,8 +98,12 @@ async function listLeads(req,res) {
  if(req.query.assignment==='assigned')filter.assignedTo={$ne:null};
  if(req.query.status)filter.status=req.query.status;
  if(req.query.q){const q=String(req.query.q).slice(0,100).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');filter.$or=[{brandName:{$regex:q,$options:'i'}},{phone:{$regex:q}}];}
- const [leads,total]=await Promise.all([Lead.find(filter).populate('assignedTo','name username email').populate('group','name').sort({createdAt:-1}).skip((page-1)*limit).limit(limit).lean(),Lead.countDocuments(filter)]);
- res.json({leads,pagination:{page,limit,total,pages:Math.max(1,Math.ceil(total/limit))}});
+ const queueBase={...filter};
+ const queues={pending:{assignedTo:null,status:{$nin:['won','lost']}},inProgress:{assignedTo:{$ne:null},status:{$nin:['won','lost']}},closed:{status:'won'},dead:{status:'lost'}};
+ if(req.query.queue){if(!queues[req.query.queue])fail(400,'Invalid lead queue');filter.$and=[queues[req.query.queue]];}
+ const [leads,total,counts]=await Promise.all([Lead.find(filter).populate('assignedTo','name username email').populate('group','name').sort({createdAt:-1}).skip((page-1)*limit).limit(limit).lean(),Lead.countDocuments(filter),Lead.aggregate([{$match:queueBase},{$group:{_id:{$switch:{branches:[{case:{$eq:['$status','won']},then:'closed'},{case:{$eq:['$status','lost']},then:'dead'},{case:{$ne:[{$ifNull:['$assignedTo',null]},null]},then:'inProgress'}],default:'pending'}},count:{$sum:1}}}])]);
+ const queueCounts={pending:0,inProgress:0,closed:0,dead:0};for(const item of counts)queueCounts[item._id]=item.count;
+ res.json({leads,queueCounts,pagination:{page,limit,total,pages:Math.max(1,Math.ceil(total/limit))}});
 }
 async function listAssignedLeads(req,res) {
  const {page,limit}=pageOf(req), filter={assignedTo:req.user._id};
@@ -115,8 +126,9 @@ async function groups(req,res) {
 }
 async function rejectedLeads(req,res) {
  const {page,limit}=pageOf(req),filter={...scope(req),state:'rejected'};
+ if(req.query.importBatch){if(!validId(req.query.importBatch))fail(400,'Invalid import batch');filter.importBatch=req.query.importBatch;}
  if(req.query.reason)filter.reason=req.query.reason;
- const [rejections,total]=await Promise.all([Rejected.find(filter).populate('group','name').populate('uploadedBy','name email').sort({createdAt:-1}).skip((page-1)*limit).limit(limit).lean(),Rejected.countDocuments(filter)]);
+ const [rejections,total]=await Promise.all([Rejected.find(filter).populate('group','name').populate('uploadedBy','name email').sort(req.query.importBatch?{sourceRow:1,_id:1}:{createdAt:-1}).skip((page-1)*limit).limit(limit).lean(),Rejected.countDocuments(filter)]);
  res.json({rejections,pagination:{page,limit,total,pages:Math.max(1,Math.ceil(total/limit))}});
 }
 async function duplicateMatches(req,res){
@@ -137,7 +149,7 @@ async function resubmit(req,res) {
   if(!rejection)fail(404,'Rejected lead not found');
   if(override&&rejection.reason!=='duplicate')fail(400,'Only duplicate rejections may use duplicate approval');
   const errors=[...result.errors];
-  if(!errors.length&&!override&&await duplicate(result.data,session))errors.push('Phone number or Brand Name already exists');
+  if(!errors.length&&!override){const match=await duplicate(result.data,session);if(match)errors.push(...duplicateErrors(result.data,match));}
   if(errors.length){rejection.raw=result.raw;rejection.errors=errors;rejection.reason=result.errors.length?'validation':'duplicate';await rejection.save({session});return;}
   [lead]=await Lead.create([document(result.data,{uploadedBy:rejection.uploadedBy,group:rejection.group,importBatch:rejection.importBatch,sourceRow:rejection.sourceRow,uploadedAt:rejection.createdAt},override)],{session});
   rejection.state='accepted';rejection.acceptedLead=lead._id;rejection.reviewedBy=isAdmin(req)?req.user._id:undefined;rejection.reviewReason=reviewReason;await rejection.save({session});
