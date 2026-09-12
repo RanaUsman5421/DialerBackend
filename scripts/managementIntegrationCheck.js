@@ -32,9 +32,13 @@ const valid=(brand='Alpha',phone='3054447156')=>({brandName:brand,phone,email:''
  for (const path of ['stats','imports']) assert.equal((await api('/api/admin/leads/'+path,'Uploader')).status,200);
  assert.equal((await api('/api/admin/users','Uploader')).status,403);
  assert.equal((await api('/api/leads/manual','Caller','POST',{groupName:'Campaign',lead:valid()})).status,403);
- const signup=await api('/api/auth/signup',null,'POST',{name:'New Agent',email:'new@example.test',password:'test-password-123',role:'leads_agent'});assert.equal(signup.status,201);assert.equal(signup.data.user.accountState,'pending');
+ const signup=await api('/api/auth/signup',null,'POST',{name:'New Agent',email:'new@example.test',username:' New.Agent ',password:'test-password-123',role:'leads_agent'});assert.equal(signup.status,201);assert.equal(signup.data.user.accountState,'pending');
+ assert.equal(signup.data.user.username,'new.agent');
+ assert.equal((await api('/api/auth/signup',null,'POST',{name:'Duplicate',email:'different@example.test',username:'NEW.AGENT',password:'test-password-123',role:'leads_agent'})).status,409);
+ assert.equal((await api('/api/auth/signup',null,'POST',{name:'Invalid',email:'invalid@example.test',username:'bad username',password:'test-password-123',role:'leads_agent'})).status,400);
  assert.equal((await api('/api/admin/auth/login',null,'POST',{identity:'new@example.test',password:'test-password-123'})).status,403);
  assert.equal((await api(`/api/admin/users/${signup.data.user.id}`,'Admin','PATCH',{accountState:'active'})).status,200);
+ assert.equal((await api('/api/admin/auth/login',null,'POST',{identity:'new.agent',password:'test-password-123'})).status,200);
  const create=await api('/api/leads/manual','Uploader','POST',{groupName:'Campaign',lead:valid()});assert.equal(create.status,201);let lead=create.data.lead;assert.equal(lead.assignedTo,null);assert.equal(lead.phone,'+923054447156');assert.equal(lead.matureConfidence,50);
  const dup=await api('/api/leads/manual','Uploader','POST',{groupName:' campaign ',lead:valid(' alpha ','03051111111')});assert.equal(dup.status,202);assert.equal(dup.data.rejection.reason,'duplicate');
  assert.equal((await Group.countDocuments()),1);

@@ -3,6 +3,7 @@ const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const usernamePattern = /^[a-z0-9._-]{3,30}$/;
 const publicUser = (user) => ({
   id: user._id.toString(),
   name: user.name,
@@ -30,8 +31,10 @@ function authFailure(res, error, fallback) {
     return res.status(503).json({ error: "Authentication is not configured on the server", code: error.code });
   }
   if (error.code === 11000) {
-    return res.status(409).json({ error: "An account with this email already exists", code: "EMAIL_EXISTS" });
+    return res.status(409).json({ error: "Email or username already exists", code: "ACCOUNT_EXISTS" });
   }
+  if (error.name === "ValidationError") return res.status(400).json({ error: "Account details are invalid. Check your name, username, email and password.", code: "INVALID_ACCOUNT" });
+  if (["MongoServerSelectionError", "MongooseServerSelectionError"].includes(error.name)) return res.status(503).json({ error: "The account database is temporarily unavailable. Please try again shortly.", code: "DATABASE_UNAVAILABLE" });
   return res.status(500).json({ error: fallback, code: "AUTH_INTERNAL_ERROR" });
 }
 
@@ -40,15 +43,18 @@ async function signup(req, res) {
     ensureAuthConfigured();
     const name = String(req.body.name || "").trim();
     const email = String(req.body.email || "").trim().toLowerCase();
+    const username = String(req.body.username || "").trim().toLowerCase();
     const password = String(req.body.password || "");
     if (name.length < 2 || !emailPattern.test(email) || password.length < 8) {
       return res.status(400).json({ error: "Name, valid email and an 8+ character password are required" });
     }
-    if (await User.exists({ email })) return res.status(409).json({ error: "An account with this email already exists" });
+    // Android clients may omit username; web signups supply it.
+    if (username && !usernamePattern.test(username)) return res.status(400).json({ error: "Username must be 3–30 characters using letters, numbers, dots, underscores or hyphens" });
+    if (await User.exists({ $or: [{ email }, ...(username ? [{ username }] : [])] })) return res.status(409).json({ error: "Email or username already exists", code: "ACCOUNT_EXISTS" });
     // Mongoose allocates _id before save. Validate JWT configuration before
     // persistence so a failed token operation cannot leave a half-created user.
     const role = req.body.role === "leads_agent" ? "leads_agent" : "calling_agent";
-    const user = new User({ name, email, password: await bcrypt.hash(password, 12), role, accountState: "pending", isActive: true });
+    const user = new User({ name, email, ...(username ? { username } : {}), password: await bcrypt.hash(password, 12), role, accountState: "pending", isActive: true });
     const token = issueToken(user);
     await user.save();
     res.status(201).json({ token, user: publicUser(user) });

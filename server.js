@@ -25,7 +25,7 @@ app.use(cors({ origin: allowedOrigin }));
 app.use(express.json({ limit: "64kb" }));
 
 app.get("/", (_req, res) => res.json({ name: "Lionex Bridge", status: "ok" }));
-app.get("/health", (_req, res) => res.json({ ok: true, mongo: mongoose.connection.readyState === 1, authConfigured: Boolean(process.env.JWT_SECRET), now: new Date().toISOString() }));
+app.get("/health", (_req, res) => res.json({ ok: true, mongo: mongoose.connection.readyState === 1, authConfigured: Boolean(process.env.JWT_SECRET), managementVersion: 1, now: new Date().toISOString() }));
 app.use("/api/auth", authRoutes);
 app.use("/api/admin/leads", leadRoutes);
 app.use("/api/admin", adminRoutes);
