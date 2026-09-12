@@ -98,17 +98,21 @@ async function listLeads(req,res) {
  if(req.query.assignment==='unassigned')filter.assignedTo=null;
  if(req.query.assignment==='assigned')filter.assignedTo={$ne:null};
  if(req.query.status)filter.status=req.query.status;
- if(req.query.q){const q=String(req.query.q).slice(0,100).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');filter.$or=[{brandName:{$regex:q,$options:'i'}},{phone:{$regex:q}}];}
+ if(req.query.q){const q=String(req.query.q).slice(0,100).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');const users=await User.find({$or:[{name:{$regex:q,$options:'i'}},{username:{$regex:q,$options:'i'}}]}).select('_id').lean();filter.$or=[{brandName:{$regex:q,$options:'i'}},{phone:{$regex:q}},{assignedTo:{$in:users.map(user=>user._id)}},{uploadedBy:{$in:users.map(user=>user._id)}}];}
+ const parseDate=value=>{if(!/^\d{4}-\d{2}-\d{2}$/.test(value))fail(400,'Invalid date filter');const date=new Date(value+'T00:00:00+05:00');if(Number.isNaN(date.getTime())||new Date(date.getTime()+5*3600000).toISOString().slice(0,10)!==value)fail(400,'Invalid date filter');return date;};
+ if(req.query.from || req.query.to){const from=req.query.from?parseDate(req.query.from):null,to=req.query.to?new Date(parseDate(req.query.to).getTime()+86400000):null;if(from&&to&&from>=to)fail(400,'Start date must not be after end date');const range={...(from?{$gte:from}:{}),...(to?{$lt:to}:{})};filter.$and=[{$or:[{uploadedAt:range},{uploadedAt:null,createdAt:range}]}];}
+ const todayStart=new Date(new Date(Date.now()+5*3600000).toISOString().slice(0,10)+'T00:00:00+05:00');
+ if(req.query.schedule){if(!['all','today'].includes(req.query.schedule))fail(400,'Invalid schedule filter');const day=todayStart;filter.followUpAt=req.query.schedule==='today'?{$gte:day,$lt:new Date(day.getTime()+86400000)}:{$ne:null};}
  const queueBase={...filter};
  const sections=leadFilters();
  const chosenFilter=sections.flatMap(section=>section.filters).find(item=>item.id===req.query.leadFilter);
  if(req.query.leadFilter&&!chosenFilter)fail(400,'Invalid lead filter');
- if(chosenFilter)filter.$and=[chosenFilter.match];
+ if(chosenFilter)filter.$and=[...(filter.$and||[]),chosenFilter.match];
  const queues={pending:{assignedTo:null,status:{$nin:['won','lost']}},inProgress:{assignedTo:{$ne:null},status:{$nin:['won','lost']}},closed:{status:'won'},dead:{status:'lost'}};
  if(req.query.queue){if(!queues[req.query.queue])fail(400,'Invalid lead queue');filter.$and=[...(filter.$and||[]),queues[req.query.queue]];}
- const [leads,total,counts,filterSections]=await Promise.all([Lead.find(filter).populate('assignedTo','name username email').populate('group','name').sort({createdAt:-1}).skip((page-1)*limit).limit(limit).lean(),Lead.countDocuments(filter),Lead.aggregate([{$match:queueBase},{$group:{_id:{$switch:{branches:[{case:{$eq:['$status','won']},then:'closed'},{case:{$eq:['$status','lost']},then:'dead'},{case:{$ne:[{$ifNull:['$assignedTo',null]},null]},then:'inProgress'}],default:'pending'}},count:{$sum:1}}}]),filterCounts(Lead,queueBase,sections)]);
+ const [leads,total,counts,filterSections,todaySchedules]=await Promise.all([Lead.find(filter).populate('assignedTo','name username email').populate('group','name').sort({createdAt:-1}).skip((page-1)*limit).limit(limit).lean(),Lead.countDocuments(filter),Lead.aggregate([{$match:queueBase},{$group:{_id:{$switch:{branches:[{case:{$eq:['$status','won']},then:'closed'},{case:{$eq:['$status','lost']},then:'dead'},{case:{$ne:[{$ifNull:['$assignedTo',null]},null]},then:'inProgress'}],default:'pending'}},count:{$sum:1}}}]),filterCounts(Lead,queueBase,sections),Lead.countDocuments({...queueBase,followUpAt:{$gte:todayStart,$lt:new Date(todayStart.getTime()+86400000)}})]);
  const queueCounts={pending:0,inProgress:0,closed:0,dead:0};for(const item of counts)queueCounts[item._id]=item.count;
- res.json({leads,queueCounts,filterSections,pagination:{page,limit,total,pages:Math.max(1,Math.ceil(total/limit))}});
+ res.json({leads,queueCounts,filterSections,todaySchedules,pagination:{page,limit,total,pages:Math.max(1,Math.ceil(total/limit))}});
 }
 async function listAssignedLeads(req,res) {
  const {page,limit}=pageOf(req), filter={assignedTo:req.user._id};
@@ -164,23 +168,34 @@ async function resubmit(req,res) {
 }
 async function assign(req,res) {
  let targetName="Unassigned";
+ const groupIds=[...new Set(req.body.groupIds||[])];
  const ids=[...new Set(req.body.leadIds||[])],target=req.body.assignedTo||null,reason=String(req.body.reason||'').trim().slice(0,500);
- if(!ids.length||ids.length>500||ids.some(id=>!validId(id)))fail(400,'Select between 1 and 500 leads');
+ if(groupIds.length){if(groupIds.length>25||groupIds.some(id=>!validId(id))||ids.length)fail(400,'Select up to 25 groups without individual leads');if(!target)fail(400,'Choose a Calling Agent');if(!['remaining','reassign'].includes(req.body.mode))fail(400,'Choose remaining leads or group reassignment');if(req.body.mode==='reassign'&&!reason)fail(400,'A reason is required for group reassignment');}
+ else if(!ids.length||ids.length>500||ids.some(id=>!validId(id)))fail(400,'Select between 1 and 500 leads');
  if(target){if(!validId(target))fail(400,'Invalid calling agent');const user=await User.findOne({_id:target,role:{$in:['user','calling_agent']},isActive:true,accountState:{$nin:['pending','suspended']}});if(!user)fail(400,'Choose an active Calling Agent');targetName=user.name;}
+ let assignedCount=0;
  await mongoose.connection.transaction(async session=>{
-  const leads=await Lead.find({_id:{$in:ids}}).populate('assignedTo','name').session(session);
-  if(leads.length!==ids.length)fail(404,'One or more leads no longer exist');
+  assignedCount=0;
+  if(groupIds.length&&(await Group.countDocuments({_id:{$in:groupIds}}).session(session))!==groupIds.length)fail(404,'One or more groups no longer exist');
+  const filter=groupIds.length?{group:{$in:groupIds},...(req.body.mode==='remaining'?{assignedTo:null}:{})}:{_id:{$in:ids}};
+  const leads=await Lead.find(filter).populate('assignedTo','name').limit(20001).session(session);
+  if(leads.length>20000)fail(413,'Assign no more than 20,000 group leads at once');
+  if(!groupIds.length&&leads.length!==ids.length)fail(404,'One or more leads no longer exist');
+  if(groupIds.length&&!leads.length)fail(400,'Selected groups have no eligible leads');
   const changed=leads.filter(lead=>idOf(lead.assignedTo)!==idOf(target));
   if(changed.some(lead=>lead.assignedTo)&&!reason)fail(400,'A reason is required for reassignment or unassignment');
   if(!changed.length)return;
-  await Lead.bulkWrite(changed.map(lead=>({updateOne:{filter:{_id:lead._id},update:{$set:{assignedTo:target,assignedBy:req.user._id,assignedAt:new Date()},$inc:{version:1,assignmentVersion:1}}}})),{session});
-  await Activity.insertMany(changed.map(lead=>({lead:lead._id,actor:req.user._id,type:lead.assignedTo?'reassigned':'assigned',details:{previousAgent:lead.assignedTo?._id||null,newAgent:target,previousAgentName:lead.assignedTo?.name||"Unassigned",newAgentName:targetName,reason}})),{session});
+  assignedCount=changed.length;
+  for(let offset=0;offset<changed.length;offset+=500){const chunk=changed.slice(offset,offset+500);
+  await Lead.bulkWrite(chunk.map(lead=>({updateOne:{filter:{_id:lead._id},update:{$set:{assignedTo:target,assignedBy:req.user._id,assignedAt:new Date()},$inc:{version:1,assignmentVersion:1}}}})),{session});
+  await Activity.insertMany(chunk.map(lead=>({lead:lead._id,actor:req.user._id,type:lead.assignedTo?'reassigned':'assigned',details:{previousAgent:lead.assignedTo?._id||null,newAgent:target,previousAgentName:lead.assignedTo?.name||"Unassigned",newAgentName:targetName,reason}})),{session});
+  }
  });
- res.json({message:'Assignment updated'});
+ res.json({assigned:assignedCount,message:`${assignedCount} leads assigned successfully`});
 }
 async function workload(req,res) {
- const [users,counts]=await Promise.all([User.find({role:{$in:['user','calling_agent']}}).select('name email isActive accountState').lean(),Lead.aggregate([{$match:{assignedTo:{$ne:null}}},{$group:{_id:'$assignedTo',assigned:{$sum:1},pending:{$sum:{$cond:[{$in:['$status',['won','lost']]},0,1]}},overdue:{$sum:{$cond:[{$and:[{$ne:[{$ifNull:['$followUpAt',null]},null]},{$lt:['$followUpAt',new Date()]},{$not:[{$in:['$status',['won','lost']]}]}]},1,0]}}}}])]);
- res.json({workload:users.map(user=>({...user,id:idOf(user),...(counts.find(item=>idOf(item._id)===idOf(user))||{assigned:0,pending:0,overdue:0}),_id:user._id}))});
+ const [users,counts]=await Promise.all([User.find({role:{$in:['user','calling_agent']}}).select('name username email isActive accountState').lean(),Lead.aggregate([{$match:{assignedTo:{$ne:null}}},{$group:{_id:'$assignedTo',assigned:{$sum:1},groups:{$addToSet:'$group'},pending:{$sum:{$cond:[{$in:['$status',['won','lost']]},0,1]}},overdue:{$sum:{$cond:[{$and:[{$ne:[{$ifNull:['$followUpAt',null]},null]},{$lt:['$followUpAt',new Date()]},{$not:[{$in:['$status',['won','lost']]}]}]},1,0]}}}}])]);
+ res.json({workload:users.map(user=>({...user,id:idOf(user),...(counts.find(item=>idOf(item._id)===idOf(user))||{assigned:0,pending:0,overdue:0}),assignedGroups:(counts.find(item=>idOf(item._id)===idOf(user))?.groups||[]).filter(Boolean).length,_id:user._id}))});
 }
 async function detail(req,res) {
  if(!validId(req.params.id))fail(400,'Invalid lead ID');

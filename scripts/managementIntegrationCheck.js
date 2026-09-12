@@ -111,6 +111,19 @@ const valid=(brand='Alpha',phone='3054447156')=>({brandName:brand,phone,email:''
  const cards=await api('/api/leads/groups');assert(cards.data.groups.every(group=>group.total===group.assigned+group.remaining));
  assert.equal((await api(`/api/admin/users/${second._id}`,'Admin','PATCH',{accountState:'suspended'})).status,200);
  assert.equal((await api('/api/leads/assigned','Second')).status,401);
+ assert.equal((await api('/api/leads/assign','Uploader','POST',{groupIds:[lead.group._id||lead.group],assignedTo:caller._id,mode:'remaining'})).status,403);
+ assert.equal((await api('/api/leads/assign','Admin','POST',{groupIds:[lead.group._id||lead.group],assignedTo:caller._id,mode:'reassign'})).status,400);
+ const largeGroup=await Group.findOne({name:'Large Batch'});const grouped=await api('/api/leads/assign','Admin','POST',{groupIds:[String(largeGroup._id)],assignedTo:caller._id,mode:'remaining'});assert.equal(grouped.status,200,JSON.stringify(grouped.data));assert.equal(grouped.data.assigned,1000);assert.equal(await Lead.countDocuments({group:largeGroup._id,assignedTo:caller._id}),1000);assert.equal(await Activity.countDocuments({type:'assigned','details.newAgent':String(caller._id)}),1001);
+ const beforeGroupMove=await Lead.findOne({group:largeGroup._id}).lean();assert.equal(beforeGroupMove.assignmentVersion,1);
+ assert.equal((await api('/api/leads/assign','Admin','POST',{groupIds:[String(largeGroup._id)],assignedTo:caller._id,mode:'remaining'})).status,400);
+ await User.updateOne({_id:second._id},{$set:{accountState:'active',isActive:true}});
+ const transferredGroup=await api('/api/leads/assign','Admin','POST',{groupIds:[String(largeGroup._id)],assignedTo:second._id,mode:'reassign',reason:'Group handover'});assert.equal(transferredGroup.status,200);assert.equal(transferredGroup.data.assigned,1000);const movedGroupLead=await Lead.findById(beforeGroupMove._id).lean();assert.equal(movedGroupLead.assignmentVersion,2);assert.equal(String(movedGroupLead.assignedTo),String(second._id));assert.equal(await Activity.countDocuments({lead:beforeGroupMove._id,type:'reassigned'}),1);
+ assert.equal((await api('/api/leads?q=Second&limit=50')).data.pagination.total,1001);
+ const day=new Date(Date.now()+5*3600000).toISOString().slice(0,10),todayStart=new Date(day+'T00:00:00+05:00');await Lead.updateOne({_id:queueFixture[1]._id},{$set:{followUpAt:new Date(todayStart.getTime()+3600000)}});
+ const todayList=await api('/api/leads?q=QueueFixture&schedule=today');assert.equal(todayList.status,200);assert.equal(todayList.data.pagination.total,1);assert.equal(todayList.data.todaySchedules,1);assert.equal((await api('/api/leads?q=QueueFixture&schedule=all')).data.pagination.total,1);
+ assert.equal((await api('/api/leads?from=2026-02-30')).status,400);assert.equal((await api('/api/leads?from=2026-09-15&to=2026-09-01')).status,400);assert.equal((await api('/api/leads?schedule=wrong')).status,400);
+ const dated=await api(`/api/leads?q=QueueFixture&from=${day}&to=${day}`);assert.equal(dated.status,200);assert.equal(dated.data.pagination.total,4);
+ assert.equal((await api('/api/leads?q=Batch&limit=100')).data.leads.length,100);
  console.log('Management integration checks passed: roles, approval, validation, duplicates, import results, correction, scoped access, assignments, workload, atomic/idempotent updates and history.');
  }finally{await new Promise(resolve=>io.close(resolve));await mongoose.disconnect();await repl.stop();}
 })().catch(error=>{console.error(error);process.exitCode=1});

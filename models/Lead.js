@@ -13,5 +13,5 @@ const schema=new mongoose.Schema({
  extra:{type:Map,of:String,default:{}}
 },{timestamps:true});
 schema.index({phoneKey:1},{unique:true,sparse:true});schema.index({brandKey:1},{unique:true,sparse:true});
-schema.index({assignedTo:1,status:1,createdAt:-1});schema.index({uploadedBy:1,group:1,createdAt:-1});schema.index({group:1,assignedTo:1});schema.index({assignedTo:1,followUpAt:1});
+schema.index({assignedTo:1,status:1,createdAt:-1});schema.index({uploadedBy:1,group:1,createdAt:-1});schema.index({group:1,assignedTo:1});schema.index({assignedTo:1,followUpAt:1});schema.index({followUpAt:1});schema.index({uploadedAt:1});
 module.exports=mongoose.model('Lead',schema);
