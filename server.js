@@ -13,7 +13,7 @@ const pairing = require("./services/pairingStore");
 const authRoutes = require("./routes/auth");
 const adminRoutes = require("./routes/admin");
 const leadRoutes = require("./routes/leads");
-const { requireAuth, verifyToken } = require("./middleware/auth");
+const { requireAuth, verifyToken, requireRoles } = require("./middleware/auth");
 
 const app = express();
 const server = http.createServer(app);
@@ -27,11 +27,11 @@ app.use(express.json({ limit: "64kb" }));
 app.get("/", (_req, res) => res.json({ name: "Lionex Bridge", status: "ok" }));
 app.get("/health", (_req, res) => res.json({ ok: true, mongo: mongoose.connection.readyState === 1, authConfigured: Boolean(process.env.JWT_SECRET), now: new Date().toISOString() }));
 app.use("/api/auth", authRoutes);
-app.use("/api/admin", adminRoutes);
 app.use("/api/admin/leads", leadRoutes);
+app.use("/api/admin", adminRoutes);
 app.use("/api/leads", leadRoutes);
 
-app.post("/api/pairing/sessions", requireAuth, async (req, res) => {
+app.post("/api/pairing/sessions", requireAuth, requireRoles("calling_agent"), async (req, res) => {
   try {
     const publicUrl = String(req.body.serverUrl || process.env.PUBLIC_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/, "");
     const created = await pairing.createSession(req.body.desktopName, publicUrl, req.auth.sub);
@@ -48,17 +48,24 @@ app.get("/api/pairing/sessions/:id", async (req, res) => {
 app.use((error, _req, res, _next) => {
   if (error?.code === "LIMIT_FILE_SIZE") return res.status(413).json({ error: "Spreadsheet must be 5 MB or smaller" });
   if (error?.message?.includes(".xls")) return res.status(400).json({ error: error.message });
+  if(error.status) return res.status(error.status).json({error:error.message});
+  if(error.name === "CastError" || error.name === "ValidationError") return res.status(400).json({error:"Invalid request data"});
   console.error("[http]", error);
   res.status(500).json({ error: "Unexpected server error" });
 });
 
 function acknowledge(ack, payload) { if (typeof ack === "function") ack(payload); }
+async function activeCaller(session) {
+ if(!session?.userId)return false;
+ const user=await require('./models/User').findById(session.userId).select('role isActive accountState').lean();
+ return Boolean(user && ['user','calling_agent'].includes(user.role) && user.isActive!==false && (!user.accountState||user.accountState==='active'));
+}
 function room(session) { return `pair:${session.pairingId}`; }
 
 io.on("connection", (socket) => {
   socket.on("desktop:join", async (data = {}, ack) => {
     const session = await pairing.get(data.pairingId);
-    if (!pairing.verifyDesktop(session, data.desktopToken)) return acknowledge(ack, { ok: false, error: "Invalid desktop session" });
+    if ((!pairing.verifyDesktop(session, data.desktopToken) || !await activeCaller(session))) return acknowledge(ack, { ok: false, error: "Invalid desktop session" });
     session.desktopSocketId = socket.id;
     socket.data.pairingId = session.pairingId;
     socket.data.peerType = "desktop";
@@ -71,7 +78,7 @@ io.on("connection", (socket) => {
     const session = await pairing.findByCode(code);
     if (!session) return acknowledge(ack, { ok: false, error: "Code invalid or expired" });
     const claims = verifyToken(data.accessToken);
-    if (!claims || claims.sub !== session.userId) return acknowledge(ack, { ok: false, error: "Sign in with the same account used on desktop" });
+    if (!claims || claims.sub !== session.userId || !await activeCaller(session)) return acknowledge(ack, { ok: false, error: "Sign in with the same account used on desktop" });
     const device = data.device || {};
     if (!device.deviceId || !device.name) return acknowledge(ack, { ok: false, error: "Device identity is required" });
 
@@ -94,7 +101,7 @@ io.on("connection", (socket) => {
 
   socket.on("phone:resume", async (data = {}, ack) => {
     const session = await pairing.get(data.pairingId);
-    if (!pairing.verifyPhone(session, data.phoneToken)) return acknowledge(ack, { ok: false, error: "Saved pairing is no longer valid" });
+    if ((!pairing.verifyPhone(session, data.phoneToken) || !await activeCaller(session))) return acknowledge(ack, { ok: false, error: "Saved pairing is no longer valid" });
     session.phoneSocketId = socket.id;
     socket.data.pairingId = session.pairingId;
     socket.data.peerType = "phone";
@@ -105,7 +112,7 @@ io.on("connection", (socket) => {
 
   socket.on("desktop:command", async (data = {}, ack) => {
     const session = await pairing.get(data.pairingId);
-    if (!pairing.verifyDesktop(session, data.desktopToken) || !session.pairedAt) return acknowledge(ack, { ok: false, error: "Desktop is not paired" });
+    if ((!pairing.verifyDesktop(session, data.desktopToken) || !await activeCaller(session)) || !session.pairedAt) return acknowledge(ack, { ok: false, error: "Desktop is not paired" });
     if (!session.phoneSocketId) return acknowledge(ack, { ok: false, error: "Phone is offline" });
     io.to(session.phoneSocketId).emit("phone:command", data.command || {});
     acknowledge(ack, { ok: true });
@@ -113,14 +120,14 @@ io.on("connection", (socket) => {
 
   socket.on("phone:event", async (data = {}, ack) => {
     const session = await pairing.get(data.pairingId);
-    if (!pairing.verifyPhone(session, data.phoneToken)) return acknowledge(ack, { ok: false, error: "Phone is not authenticated" });
+    if ((!pairing.verifyPhone(session, data.phoneToken) || !await activeCaller(session))) return acknowledge(ack, { ok: false, error: "Phone is not authenticated" });
     if (session.desktopSocketId) io.to(session.desktopSocketId).emit("desktop:event", data.event || {});
     acknowledge(ack, { ok: true });
   });
 
   socket.on("desktop:unpair", async (data = {}, ack) => {
     const session = await pairing.get(data.pairingId);
-    if (!pairing.verifyDesktop(session, data.desktopToken)) return acknowledge(ack, { ok: false, error: "Invalid desktop session" });
+    if ((!pairing.verifyDesktop(session, data.desktopToken) || !await activeCaller(session))) return acknowledge(ack, { ok: false, error: "Invalid desktop session" });
     if (session.phoneSocketId) io.to(session.phoneSocketId).emit("phone:unpaired");
     await pairing.revoke(session);
     acknowledge(ack, { ok: true });
@@ -128,7 +135,7 @@ io.on("connection", (socket) => {
 
   socket.on("phone:unpair", async (data = {}, ack) => {
     const session = await pairing.get(data.pairingId);
-    if (!pairing.verifyPhone(session, data.phoneToken)) return acknowledge(ack, { ok: false, error: "Invalid phone session" });
+    if ((!pairing.verifyPhone(session, data.phoneToken) || !await activeCaller(session))) return acknowledge(ack, { ok: false, error: "Invalid phone session" });
     if (session.desktopSocketId) io.to(session.desktopSocketId).emit("pairing:revoked");
     await pairing.revoke(session);
     acknowledge(ack, { ok: true });

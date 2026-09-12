@@ -14,9 +14,10 @@ async function login(req, res) {
     const identity = String(req.body.identity || req.body.email || "").trim().toLowerCase();
     const password = String(req.body.password || "");
     const user = await User.findOne({ $or: [{ email: identity }, { username: identity }] }).select("+password");
-    if (!user || user.role !== "admin" || !user.isActive || !(await bcrypt.compare(password, user.password))) {
+    if (!user || !["admin","leads_agent"].includes(user.role) || !user.isActive || user.accountState === "suspended" || !(await bcrypt.compare(password, user.password))) {
       return res.status(401).json({ error: "Invalid admin credentials" });
     }
+    if(user.accountState === "pending") return res.status(403).json({error:"Your account is awaiting administrator approval",code:"ACCOUNT_PENDING"});
     res.json({ token: issueToken(user), user: publicUser(user) });
   } catch (error) {
     console.error("[admin-login]", error);

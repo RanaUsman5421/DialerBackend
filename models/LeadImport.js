@@ -1,15 +1,3 @@
-const mongoose = require("mongoose");
-
-const leadImportSchema = new mongoose.Schema({
-  fileName: { type: String, required: true, trim: true },
-  sheetName: { type: String, default: "" },
-  assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
-  uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
-  totalRows: { type: Number, default: 0 },
-  importedRows: { type: Number, default: 0 },
-  skippedRows: { type: Number, default: 0 },
-  status: { type: String, enum: ["processing", "completed", "failed"], default: "processing", index: true },
-  errors: [{ row: Number, message: String }],
-}, { timestamps: true });
-
-module.exports = mongoose.model("LeadImport", leadImportSchema);
+const mongoose=require('mongoose');
+const schema=new mongoose.Schema({fileName:{type:String,required:true},sheetName:String,assignedTo:{type:mongoose.Schema.Types.ObjectId,ref:'User',default:null},uploadedBy:{type:mongoose.Schema.Types.ObjectId,ref:'User',required:true},group:{type:mongoose.Schema.Types.ObjectId,ref:'LeadGroup',required:true},totalRows:{type:Number,default:0},importedRows:{type:Number,default:0},skippedRows:{type:Number,default:0},duplicateRows:{type:Number,default:0},status:{type:String,enum:['processing','completed','failed'],default:'processing'},errors:[{row:Number,message:String}]},{timestamps:true});
+schema.index({uploadedBy:1,createdAt:-1});module.exports=mongoose.model('LeadImport',schema);

@@ -1,21 +1,17 @@
-const mongoose = require("mongoose");
-
-const leadSchema = new mongoose.Schema({
-  name: { type: String, trim: true, default: "Unknown lead" },
-  phone: { type: String, required: true, trim: true, index: true },
-  email: { type: String, lowercase: true, trim: true, default: "" },
-  company: { type: String, trim: true, default: "" },
-  city: { type: String, trim: true, default: "" },
-  source: { type: String, trim: true, default: "Excel import" },
-  notes: { type: String, trim: true, default: "" },
-  status: { type: String, enum: ["new", "contacted", "qualified", "won", "lost"], default: "new", index: true },
-  assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true, index: true },
-  uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-  importBatch: { type: mongoose.Schema.Types.ObjectId, ref: "LeadImport", required: true, index: true },
-  sourceRow: { type: Number, required: true },
-  extra: { type: Map, of: String, default: {} },
-}, { timestamps: true });
-
-leadSchema.index({ importBatch: 1, sourceRow: 1 }, { unique: true });
-
-module.exports = mongoose.model("Lead", leadSchema);
+const mongoose=require('mongoose');
+const ref={type:mongoose.Schema.Types.ObjectId,ref:'User'};
+const schema=new mongoose.Schema({
+ name:{type:String,default:'Unknown lead'},company:String,brandName:{type:String,required:true},phone:{type:String,required:true},
+ phoneNormalized:{type:String,index:true},brandNormalized:{type:String,index:true},phoneKey:String,brandKey:String,
+ email:String,leadType:String,perDayOrders:String,extractedFrom:String,extractedBy:String,followers:String,socialActivity:String,
+ matureConfidence:{type:Number,min:0,max:100},productDetails:String,websiteUrl:String,socialLink:String,
+ city:{type:String,default:''},source:String,notes:{type:String,default:''},
+ status:{type:String,enum:['new','contacted','qualified','won','lost'],default:'new'},callStatus:String,leadCategory:String,activity:String,
+ followUpAt:Date,assignedTo:{...ref,default:null},uploadedBy:{...ref,required:true},uploadedAt:{type:Date,default:Date.now},assignedBy:ref,assignedAt:Date,
+ group:{type:mongoose.Schema.Types.ObjectId,ref:'LeadGroup'},importBatch:{type:mongoose.Schema.Types.ObjectId,ref:'LeadImport'},sourceRow:Number,
+ version:{type:Number,default:0},assignmentVersion:{type:Number,default:0},duplicateException:{type:Boolean,default:false},
+ extra:{type:Map,of:String,default:{}}
+},{timestamps:true});
+schema.index({phoneKey:1},{unique:true,sparse:true});schema.index({brandKey:1},{unique:true,sparse:true});
+schema.index({assignedTo:1,status:1,createdAt:-1});schema.index({uploadedBy:1,group:1,createdAt:-1});schema.index({group:1,assignedTo:1});schema.index({assignedTo:1,followUpAt:1});
+module.exports=mongoose.model('Lead',schema);

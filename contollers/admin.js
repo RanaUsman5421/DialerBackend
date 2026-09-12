@@ -7,7 +7,7 @@ const { publicUser } = require("./auth");
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 async function listUsers(req, res) {
-  const users = await User.find({ role: "user" }).select("name username email role isActive createdAt").sort({ createdAt: -1 });
+  const users = await User.find({ role: { $in: ["user", "calling_agent", "leads_agent"] } }).select("name username email role isActive accountState createdAt").sort({ createdAt: -1 });
   res.json({ users: users.map(publicUser) });
 }
 
@@ -21,7 +21,7 @@ async function createUser(req, res) {
       return res.status(400).json({ error: "Name, username, valid email and an 8+ character password are required" });
     }
     if (await User.exists({ $or: [{ email }, { username }] })) return res.status(409).json({ error: "Email or username already exists" });
-    const user = await User.create({ name, username, email, password: await bcrypt.hash(password, 12), role: "user", createdBy: req.user._id });
+    const user = await User.create({ name, username, email, password: await bcrypt.hash(password, 12), role: req.body.role === "leads_agent" ? "leads_agent" : "calling_agent", accountState: "active", createdBy: req.user._id });
     res.status(201).json({ user: publicUser(user) });
   } catch (error) {
     if (error.code === 11000) return res.status(409).json({ error: "Email or username already exists" });
@@ -44,4 +44,12 @@ async function createInvite(req, res) {
   res.status(201).json({ inviteToken: rawToken, email, expiresAt });
 }
 
-module.exports = { listUsers, createUser, listAdmins, createInvite };
+async function updateUser(req,res) {
+ if(!require('mongoose').isValidObjectId(req.params.id)) return res.status(400).json({error:'Invalid account ID'});
+ const accountState=req.body.accountState;
+ if(!['active','suspended'].includes(accountState)) return res.status(400).json({error:'Choose active or suspended'});
+ const user=await User.findOneAndUpdate({_id:req.params.id,role:{$ne:'admin'}},{$set:{accountState,isActive:accountState==='active'}},{new:true});
+ if(!user)return res.status(404).json({error:'Account not found'});
+ res.json({user:publicUser(user)});
+}
+module.exports = { listUsers, createUser, listAdmins, createInvite, updateUser };

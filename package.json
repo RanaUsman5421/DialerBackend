@@ -7,7 +7,9 @@
     "test:auth": "node scripts/authIntegrationCheck.js",
     "test:persistence": "node scripts/pairingPersistenceCheck.js",
     "import-users": "node scripts/importUsers.js",
-    "seed:admin": "node scripts/seedAdmin.js"
+    "seed:admin": "node scripts/seedAdmin.js",
+    "test:management": "node scripts/managementIntegrationCheck.js",
+    "migrate:management": "node scripts/migrateManagement.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
@@ -22,6 +24,7 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "mongodb-memory-server": "^11.2.0",
     "socket.io-client": "^4.8.1"
   }
 }

@@ -8,7 +8,8 @@ const publicUser = (user) => ({
   name: user.name,
   username: user.username || null,
   email: user.email,
-  role: user.role || "user",
+  role: user.role === "user" ? "calling_agent" : user.role,
+  accountState: user.accountState || "active",
   isActive: user.isActive !== false,
 });
 const ensureAuthConfigured = () => {
@@ -46,7 +47,8 @@ async function signup(req, res) {
     if (await User.exists({ email })) return res.status(409).json({ error: "An account with this email already exists" });
     // Mongoose allocates _id before save. Validate JWT configuration before
     // persistence so a failed token operation cannot leave a half-created user.
-    const user = new User({ name, email, password: await bcrypt.hash(password, 12), role: "user" });
+    const role = req.body.role === "leads_agent" ? "leads_agent" : "calling_agent";
+    const user = new User({ name, email, password: await bcrypt.hash(password, 12), role, accountState: "pending", isActive: true });
     const token = issueToken(user);
     await user.save();
     res.status(201).json({ token, user: publicUser(user) });
@@ -61,7 +63,8 @@ async function login(req, res) {
     const email = String(req.body.email || "").trim().toLowerCase();
     const password = String(req.body.password || "");
     const user = await User.findOne({ email }).select("+password");
-    if (!user || user.isActive === false || !(await bcrypt.compare(password, user.password))) return res.status(401).json({ error: "Invalid email or password" });
+    if (!user || user.isActive === false || user.accountState === "suspended" || !(await bcrypt.compare(password, user.password))) return res.status(401).json({ error: "Invalid email or password" });
+    if(user.accountState === "pending") return res.status(403).json({error:"Your account is awaiting administrator approval",code:"ACCOUNT_PENDING"});
     res.json({ token: issueToken(user), user: publicUser(user) });
   } catch (error) {
     authFailure(res, error, "Unable to sign in");

@@ -12,7 +12,8 @@ async function requireAuth(req, res, next) {
   if (!claims) return res.status(401).json({ error: "Authentication required" });
   try {
     const user = await User.findById(claims.sub);
-    if (!user || user.isActive === false) return res.status(401).json({ error: "Account is unavailable" });
+    if (!user || user.isActive === false || user.accountState === "suspended") return res.status(401).json({ error: "Account is unavailable" });
+    if (user.accountState === "pending") return res.status(403).json({ error: "Your account is awaiting administrator approval", code: "ACCOUNT_PENDING" });
     req.auth = claims;
     req.user = user;
     next();
@@ -26,4 +27,6 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-module.exports = { requireAuth, requireAdmin, verifyToken };
+const roleOf = user => user?.role === "user" ? "calling_agent" : user?.role;
+const requireRoles = (...roles) => (req,res,next) => roles.includes(roleOf(req.user)) ? next() : res.status(403).json({error:"This action is unavailable for your account role"});
+module.exports = { requireAuth, requireAdmin, verifyToken, requireRoles, roleOf };

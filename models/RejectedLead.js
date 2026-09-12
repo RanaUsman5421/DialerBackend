@@ -1,0 +1,4 @@
+const mongoose=require('mongoose');
+const schema=new mongoose.Schema({raw:{type:mongoose.Schema.Types.Mixed,required:true},errors:[String],reason:{type:String,enum:['validation','duplicate'],required:true},state:{type:String,enum:['rejected','accepted','dismissed'],default:'rejected'},uploadedBy:{type:mongoose.Schema.Types.ObjectId,ref:'User',required:true},group:{type:mongoose.Schema.Types.ObjectId,ref:'LeadGroup',required:true},importBatch:{type:mongoose.Schema.Types.ObjectId,ref:'LeadImport'},sourceRow:Number,acceptedLead:{type:mongoose.Schema.Types.ObjectId,ref:'Lead'},reviewedBy:{type:mongoose.Schema.Types.ObjectId,ref:'User'},reviewReason:String},{timestamps:true});
+schema.index({uploadedBy:1,state:1,createdAt:-1});schema.index({state:1,reason:1,createdAt:-1});
+module.exports=mongoose.model('RejectedLead',schema);

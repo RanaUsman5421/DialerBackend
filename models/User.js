@@ -30,8 +30,8 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ["user", "admin"],
-    default: "user",
+    enum: ["user", "calling_agent", "leads_agent", "admin"],
+    default: "calling_agent",
     required: true,
     index: true,
   },
@@ -40,6 +40,7 @@ const userSchema = new mongoose.Schema({
     default: true,
     index: true,
   },
+  accountState: { type: String, enum: ["pending", "active", "suspended"], default: "active", index: true },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "User",

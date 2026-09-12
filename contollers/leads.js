@@ -1,112 +1,225 @@
-const XLSX = require("xlsx");
-const Lead = require("../models/Lead");
-const LeadImport = require("../models/LeadImport");
-const User = require("../models/User");
-
-const MAX_ROWS = 20000;
-const MAX_COLUMNS = 100;
-const aliases = {
-  name: ["name", "fullname", "customername", "leadname", "contactname"],
-  phone: ["phone", "phonenumber", "mobile", "mobilenumber", "contact", "contactnumber", "telephone"],
-  email: ["email", "emailaddress"],
-  company: ["company", "companyname", "organization", "organisation"],
-  city: ["city", "location"],
-  source: ["source", "leadsource"],
-  notes: ["notes", "note", "remarks", "comment", "comments"],
-};
-const cleanKey = (value) => String(value || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-const cleanValue = (value, max = 500) => String(value ?? "").trim().slice(0, max);
-
-function pick(row, field) {
-  const wanted = new Set(aliases[field]);
-  const entry = Object.entries(row).find(([key]) => wanted.has(cleanKey(key)));
-  return entry ? cleanValue(entry[1]) : "";
+const mongoose=require('mongoose');
+const XLSX=require('xlsx');
+const Lead=require('../models/Lead');
+const LeadImport=require('../models/LeadImport');
+const Group=require('../models/LeadGroup');
+const Rejected=require('../models/RejectedLead');
+const Activity=require('../models/LeadActivity');
+const User=require('../models/User');
+const CallAttempt=require('../models/CallAttempt');
+const {fields,key,brandKey,validateRow}=require('../services/leadValidation');
+const {roleOf}=require('../middleware/auth');
+const isAdmin=req=>roleOf(req.user)==='admin';
+const scope=req=>isAdmin(req)?{}:{uploadedBy:req.user._id};
+const pageOf=req=>({page:Math.min(10000,Math.max(1,parseInt(req.query.page)||1)),limit:Math.min(100,Math.max(10,parseInt(req.query.limit)||25))});
+const fail=(status,message)=>{const error=new Error(message);error.status=status;throw error;};
+const validId=id=>mongoose.isValidObjectId(id);
+const idOf=value=>String(value?._id || value || '');
+async function groupFor(name,user) {
+ name=String(name||'').trim().replace(/\s+/g,' ');
+ if(!name || name.length>120)fail(400,'A group name between 1 and 120 characters is required');
+ try{return await Group.findOneAndUpdate({normalizedName:brandKey(name)},{$setOnInsert:{name,createdBy:user}},{upsert:true,new:true});}
+ catch(error){if(error.code===11000)return Group.findOne({normalizedName:brandKey(name)});throw error;}
 }
-
-async function importLeads(req, res) {
-  let batch;
-  try {
-    if (!req.file) return res.status(400).json({ error: "An .xls or .xlsx file is required" });
-    const assignedTo = await User.findOne({ _id: req.body.assignedTo, role: "user", isActive: true });
-    if (!assignedTo) return res.status(400).json({ error: "Select an active user" });
-
-    const workbook = XLSX.read(req.file.buffer, { type: "buffer", cellDates: false, cellFormula: false, cellHTML: false, cellStyles: false });
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    if (!sheet || !sheet["!ref"]) return res.status(400).json({ error: "The first worksheet is empty" });
-    const range = XLSX.utils.decode_range(sheet["!ref"]);
-    const rowCount = range.e.r - range.s.r;
-    const columnCount = range.e.c - range.s.c + 1;
-    if (rowCount > MAX_ROWS || columnCount > MAX_COLUMNS) return res.status(413).json({ error: `Spreadsheet limit is ${MAX_ROWS.toLocaleString()} rows and ${MAX_COLUMNS} columns` });
-
-    const rows = XLSX.utils.sheet_to_json(sheet, { defval: "", raw: false, blankrows: false });
-    batch = await LeadImport.create({ fileName: req.file.originalname.slice(0, 180), sheetName, assignedTo: assignedTo._id, uploadedBy: req.user._id, totalRows: rows.length });
-    const errors = [];
-    const leads = [];
-    rows.forEach((row, index) => {
-      const phone = pick(row, "phone").replace(/^'+/, "");
-      if (!phone) {
-        errors.push({ row: index + 2, message: "Phone number is missing" });
-        return;
-      }
-      const knownHeaders = new Set(Object.values(aliases).flat());
-      const extra = {};
-      Object.entries(row).slice(0, MAX_COLUMNS).forEach(([key, value]) => {
-        if (!knownHeaders.has(cleanKey(key)) && cleanValue(value)) extra[cleanValue(key, 80)] = cleanValue(value);
-      });
-      leads.push({ name: pick(row, "name") || "Unknown lead", phone: cleanValue(phone, 60), email: pick(row, "email").toLowerCase(), company: pick(row, "company"), city: pick(row, "city"), source: pick(row, "source") || "Excel import", notes: pick(row, "notes"), assignedTo: assignedTo._id, uploadedBy: req.user._id, importBatch: batch._id, sourceRow: index + 2, extra });
-    });
-    for (let index = 0; index < leads.length; index += 500) await Lead.insertMany(leads.slice(index, index + 500), { ordered: true });
-    batch.importedRows = leads.length;
-    batch.skippedRows = errors.length;
-    batch.errors = errors.slice(0, 100);
-    batch.status = "completed";
-    await batch.save();
-    res.status(201).json({ import: await batch.populate("assignedTo", "name username email"), message: `${leads.length} leads assigned to ${assignedTo.name}` });
-  } catch (error) {
-    if (batch) await Lead.deleteMany({ importBatch: batch._id }).catch(() => {});
-    if (batch) await LeadImport.updateOne({ _id: batch._id }, { status: "failed", errors: [{ row: 0, message: "Import could not be completed" }] }).catch(() => {});
-    console.error("[lead-import]", error);
-    res.status(400).json({ error: "Could not read this spreadsheet. Check its format and column headings." });
+async function duplicate(data,session) {
+ return Lead.findOne({$or:[{phoneNormalized:data.phoneNormalized},{brandNormalized:data.brandNormalized}]}).select('_id brandName phone').session(session||null).lean();
+}
+function document(data,meta,exception=false) {
+ return {...data,...meta,source:data.extractedFrom,status:'new',assignedTo:null,version:0,assignmentVersion:0,
+  ...(exception?{duplicateException:true}:{phoneKey:data.phoneNormalized,brandKey:data.brandNormalized})};
+}
+async function importLeads(req,res) {
+ if(!req.file)fail(400,'An XLS or XLSX file is required');
+ const book=XLSX.read(req.file.buffer,{type:'buffer',cellFormula:false,cellHTML:false,cellStyles:false});
+ const sheet=book.Sheets[book.SheetNames[0]];
+ if(!sheet?.['!ref'])fail(400,'The first worksheet is empty');
+ const range=XLSX.utils.decode_range(sheet['!ref']);
+ if(range.e.r-range.s.r>20000 || range.e.c-range.s.c+1>100)fail(413,'Maximum 20,000 rows and 100 columns');
+ const grid=XLSX.utils.sheet_to_json(sheet,{header:1,defval:'',raw:false,blankrows:true});
+ const headers=grid[0]||[];
+ const headerKeys=headers.map(key);
+ if(new Set(headerKeys.filter(Boolean)).size!==headerKeys.filter(Boolean).length)fail(400,'Spreadsheet has duplicate column headings');
+ const missing=fields.filter(([,header,required])=>required&&!headerKeys.includes(key(header))).map(([,header])=>header);
+ // Missing mandatory columns reject the populated rows; malformed files with no known headers fail early.
+ if(!headerKeys.some(header=>fields.some(([,label])=>key(label)===header)))fail(400,'Use the provided leads spreadsheet format');
+ const rows=grid.slice(1).map((values,index)=>({row:index+range.s.r+2,raw:Object.fromEntries(headers.map((h,i)=>[h,values[i]??'']))})).filter(item=>Object.values(item.raw).some(v=>String(v).trim()));
+ if(!rows.length)fail(400,'No lead rows found');
+ const group=await groupFor(req.body.groupName,req.user._id);
+ const batch=await LeadImport.create({fileName:req.file.originalname.slice(0,180),sheetName:book.SheetNames[0],group:group._id,uploadedBy:req.user._id,totalRows:rows.length});
+ let accepted=0,rejected=0,duplicates=0;
+ try {
+  for(let offset=0;offset<rows.length;offset+=500) {
+   const chunk=rows.slice(offset,offset+500).map(item=>({...item,...validateRow(item.raw)}));
+   const existing=await Lead.find({$or:[{phoneNormalized:{$in:chunk.map(item=>item.data.phoneNormalized)}},{brandNormalized:{$in:chunk.map(item=>item.data.brandNormalized)}}]}).select('phoneNormalized brandNormalized').lean();
+   const phones=new Set(existing.map(item=>item.phoneNormalized)),brands=new Set(existing.map(item=>item.brandNormalized));
+   const candidates=[],rejects=[];
+   const reject=(item,errors,reason)=>{rejects.push({raw:item.raw,errors,reason,uploadedBy:req.user._id,group:group._id,importBatch:batch._id,sourceRow:item.row,uploadedAt:batch.createdAt});rejected++;if(reason==='duplicate')duplicates++;};
+   for(const item of chunk) {
+    if(item.errors.length){reject(item,item.errors,'validation');continue;}
+    if(phones.has(item.data.phoneNormalized)||brands.has(item.data.brandNormalized)){reject(item,['Phone number or Brand Name already exists'],'duplicate');continue;}
+    phones.add(item.data.phoneNormalized);brands.add(item.data.brandNormalized);
+    candidates.push({item,doc:document(item.data,{uploadedBy:req.user._id,group:group._id,importBatch:batch._id,sourceRow:item.row,uploadedAt:batch.createdAt})});
+   }
+   if(candidates.length) {
+    try {const inserted=await Lead.insertMany(candidates.map(item=>item.doc),{ordered:false});accepted+=inserted.length;}
+    catch(error) {
+     if(!error.writeErrors?.length)throw error;
+     accepted+=(error.insertedDocs||[]).length;
+     for(const write of error.writeErrors){if(write.code!==11000)throw error;reject(candidates[write.index].item,['Phone number or Brand Name already exists (concurrent upload)'],'duplicate');}
+    }
+   }
+   if(rejects.length)await Rejected.insertMany(rejects);
+   await LeadImport.updateOne({_id:batch._id},{$set:{importedRows:accepted,skippedRows:rejected,duplicateRows:duplicates}});
   }
+  batch.importedRows=accepted;batch.skippedRows=rejected;batch.duplicateRows=duplicates;batch.status='completed';batch.errors=missing.map(header=>({row:1,message:`Missing column: ${header}`}));await batch.save();
+  res.status(201).json({import:batch,message:`${accepted} accepted, ${rejected} rejected (${duplicates} duplicates)`,summary:{totalRows:rows.length,accepted,rejected,duplicates}});
+ }catch(error){await LeadImport.updateOne({_id:batch._id},{$set:{status:'failed',importedRows:accepted,skippedRows:rejected,duplicateRows:duplicates}});throw error;}
 }
-
-async function listLeads(req, res) {
-  const page = Math.max(1, Number(req.query.page) || 1);
-  const limit = Math.min(100, Math.max(10, Number(req.query.limit) || 25));
-  const filter = {};
-  if (req.query.assignedTo) filter.assignedTo = req.query.assignedTo;
-  if (req.query.status) filter.status = req.query.status;
-  const [items, total] = await Promise.all([
-    Lead.find(filter).populate("assignedTo", "name username email").sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
-    Lead.countDocuments(filter),
-  ]);
-  res.json({ leads: items, pagination: { page, limit, total, pages: Math.max(1, Math.ceil(total / limit)) } });
+async function manualLead(req,res) {
+ const group=await groupFor(req.body.groupName,req.user._id), result=validateRow(req.body.lead||{});
+ let reason='validation',errors=result.errors;
+ if(!errors.length&&await duplicate(result.data)){reason='duplicate';errors=['Phone number or Brand Name already exists'];}
+ if(errors.length){const rejection=await Rejected.create({raw:result.raw,errors,reason,uploadedBy:req.user._id,group:group._id});return res.status(202).json({rejection,message:'Lead added to your rejected queue'});}
+ try{const lead=await Lead.create(document(result.data,{uploadedBy:req.user._id,group:group._id}));res.status(201).json({lead,message:'Lead added to the unassigned pool'});}
+ catch(error){if(error.code!==11000)throw error;const rejection=await Rejected.create({raw:result.raw,errors:['Phone number or Brand Name already exists'],reason:'duplicate',uploadedBy:req.user._id,group:group._id});res.status(202).json({rejection,message:'Duplicate added to your rejected queue'});}
 }
-
-async function listAssignedLeads(req, res) {
-  const page = Math.max(1, Number(req.query.page) || 1);
-  const limit = Math.min(100, Math.max(10, Number(req.query.limit) || 25));
-  const filter = { assignedTo: req.user._id };
-  if (req.query.status) filter.status = req.query.status;
-  const [items, total] = await Promise.all([
-    Lead.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit),
-    Lead.countDocuments(filter),
-  ]);
-  res.json({ leads: items, pagination: { page, limit, total, pages: Math.max(1, Math.ceil(total / limit)) } });
+async function listLeads(req,res) {
+ const {page,limit}=pageOf(req),filter=scope(req);
+ if(req.query.group){if(!validId(req.query.group))fail(400,'Invalid group');filter.group=req.query.group;}
+ if(req.query.assignedTo){if(!validId(req.query.assignedTo))fail(400,'Invalid agent');filter.assignedTo=req.query.assignedTo;}
+ if(req.query.assignment==='unassigned')filter.assignedTo=null;
+ if(req.query.assignment==='assigned')filter.assignedTo={$ne:null};
+ if(req.query.status)filter.status=req.query.status;
+ if(req.query.q){const q=String(req.query.q).slice(0,100).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');filter.$or=[{brandName:{$regex:q,$options:'i'}},{phone:{$regex:q}}];}
+ const [leads,total]=await Promise.all([Lead.find(filter).populate('assignedTo','name username email').populate('group','name').sort({createdAt:-1}).skip((page-1)*limit).limit(limit).lean(),Lead.countDocuments(filter)]);
+ res.json({leads,pagination:{page,limit,total,pages:Math.max(1,Math.ceil(total/limit))}});
 }
-
-async function listImports(req, res) {
-  const imports = await LeadImport.find().populate("assignedTo", "name username email").populate("uploadedBy", "name username").sort({ createdAt: -1 }).limit(50);
-  res.json({ imports });
+async function listAssignedLeads(req,res) {
+ const {page,limit}=pageOf(req), filter={assignedTo:req.user._id};
+ if(req.query.status)filter.status=req.query.status;
+ const [leads,total]=await Promise.all([Lead.find(filter).populate('group','name').sort({followUpAt:1,createdAt:-1}).skip((page-1)*limit).limit(limit).lean(),Lead.countDocuments(filter)]);
+ res.json({leads,pagination:{page,limit,total,pages:Math.max(1,Math.ceil(total/limit))}});
 }
-
-async function stats(req, res) {
-  const [totalLeads, newLeads, assignedUsers, completedImports, recentImports] = await Promise.all([
-    Lead.countDocuments(), Lead.countDocuments({ status: "new" }), Lead.distinct("assignedTo"), LeadImport.countDocuments({ status: "completed" }),
-    LeadImport.find().populate("assignedTo", "name username").sort({ createdAt: -1 }).limit(5),
-  ]);
-  res.json({ totalLeads, newLeads, assignedUsers: assignedUsers.length, completedImports, recentImports });
+async function listImports(req,res){res.json({imports:await LeadImport.find(scope(req)).populate('group','name').populate('uploadedBy','name').sort({createdAt:-1}).limit(50).lean()});}
+async function stats(req,res) {
+ const filter=scope(req);
+ const [totalLeads,newLeads,unassignedLeads,completedImports,rejectedLeads,assigned]=await Promise.all([Lead.countDocuments(filter),Lead.countDocuments({...filter,status:'new'}),Lead.countDocuments({...filter,assignedTo:null}),LeadImport.countDocuments({...filter,status:'completed'}),Rejected.countDocuments({...filter,state:'rejected'}),Lead.aggregate([{$match:filter},{$match:{assignedTo:{$ne:null}}},{$group:{_id:'$assignedTo'}}])]);
+ res.json({totalLeads,newLeads,unassignedLeads,assignedUsers:assigned.length,completedImports,rejectedLeads});
 }
-
-module.exports = { importLeads, listLeads, listAssignedLeads, listImports, stats };
+async function groups(req,res) {
+ const filter=scope(req);
+ const [counts,rejections]=await Promise.all([Lead.aggregate([{$match:filter},{$group:{_id:'$group',total:{$sum:1},assigned:{$sum:{$cond:[{$ne:[{$ifNull:['$assignedTo',null]},null]},1,0]}}}}]),Rejected.aggregate([{$match:{...filter,state:'rejected'}},{$group:{_id:'$group',rejected:{$sum:1}}}])]);
+ const visible=isAdmin(req)?{}:{$or:[{createdBy:req.user._id},{_id:{$in:[...counts,...rejections].map(item=>item._id).filter(Boolean)}}]};
+ const items=await Group.find(visible).sort({name:1}).limit(1000).lean();
+ res.json({groups:items.map(item=>{const count=counts.find(c=>idOf(c._id)===idOf(item._id))||{};return {...item,total:count.total||0,assigned:count.assigned||0,remaining:(count.total||0)-(count.assigned||0),rejected:rejections.find(c=>idOf(c._id)===idOf(item._id))?.rejected||0};})});
+}
+async function rejectedLeads(req,res) {
+ const {page,limit}=pageOf(req),filter={...scope(req),state:'rejected'};
+ if(req.query.reason)filter.reason=req.query.reason;
+ const [rejections,total]=await Promise.all([Rejected.find(filter).populate('group','name').populate('uploadedBy','name email').sort({createdAt:-1}).skip((page-1)*limit).limit(limit).lean(),Rejected.countDocuments(filter)]);
+ res.json({rejections,pagination:{page,limit,total,pages:Math.max(1,Math.ceil(total/limit))}});
+}
+async function duplicateMatches(req,res){
+ if(!validId(req.params.id))fail(400,'Invalid rejection ID');
+ const rejection=await Rejected.findById(req.params.id).lean();if(!rejection)fail(404,'Rejected lead not found');
+ const data=validateRow(rejection.raw).data;
+ const matches=await Lead.find({$or:[{phoneNormalized:data.phoneNormalized},{brandNormalized:data.brandNormalized}]}).select('brandName phone leadType socialLink uploadedBy group assignedTo').populate('group','name').populate('assignedTo','name').limit(20).lean();res.json({matches});
+}
+async function resubmit(req,res) {
+ if(!validId(req.params.id))fail(400,'Invalid rejection ID');
+ const result=validateRow(req.body.lead||{});
+ const override=isAdmin(req)&&req.body.allowDuplicate===true;
+ const reviewReason=String(req.body.reviewReason||'').trim().slice(0,500);
+ if(override&&!reviewReason)fail(400,'A reason is required for duplicate approval');
+ let lead,rejection;
+ try{await mongoose.connection.transaction(async session=>{
+  rejection=await Rejected.findOne({_id:req.params.id,...scope(req),state:'rejected'}).session(session);
+  if(!rejection)fail(404,'Rejected lead not found');
+  if(override&&rejection.reason!=='duplicate')fail(400,'Only duplicate rejections may use duplicate approval');
+  const errors=[...result.errors];
+  if(!errors.length&&!override&&await duplicate(result.data,session))errors.push('Phone number or Brand Name already exists');
+  if(errors.length){rejection.raw=result.raw;rejection.errors=errors;rejection.reason=result.errors.length?'validation':'duplicate';await rejection.save({session});return;}
+  [lead]=await Lead.create([document(result.data,{uploadedBy:rejection.uploadedBy,group:rejection.group,importBatch:rejection.importBatch,sourceRow:rejection.sourceRow,uploadedAt:rejection.createdAt},override)],{session});
+  rejection.state='accepted';rejection.acceptedLead=lead._id;rejection.reviewedBy=isAdmin(req)?req.user._id:undefined;rejection.reviewReason=reviewReason;await rejection.save({session});
+  if(override)await Activity.create([{lead:lead._id,actor:req.user._id,type:'duplicate-approved',details:{reason:reviewReason}}],{session});
+ });}catch(error){if(error.code===11000)fail(409,'A matching lead was just added. Resubmit to refresh the rejection reason.');throw error;}
+ res.status(lead?200:202).json({lead,rejection,message:lead?'Lead accepted into its group':'Still rejected: '+rejection.errors.join('; ')});
+}
+async function assign(req,res) {
+ let targetName="Unassigned";
+ const ids=[...new Set(req.body.leadIds||[])],target=req.body.assignedTo||null,reason=String(req.body.reason||'').trim().slice(0,500);
+ if(!ids.length||ids.length>500||ids.some(id=>!validId(id)))fail(400,'Select between 1 and 500 leads');
+ if(target){if(!validId(target))fail(400,'Invalid calling agent');const user=await User.findOne({_id:target,role:{$in:['user','calling_agent']},isActive:true,accountState:{$nin:['pending','suspended']}});if(!user)fail(400,'Choose an active Calling Agent');targetName=user.name;}
+ await mongoose.connection.transaction(async session=>{
+  const leads=await Lead.find({_id:{$in:ids}}).populate('assignedTo','name').session(session);
+  if(leads.length!==ids.length)fail(404,'One or more leads no longer exist');
+  const changed=leads.filter(lead=>idOf(lead.assignedTo)!==idOf(target));
+  if(changed.some(lead=>lead.assignedTo)&&!reason)fail(400,'A reason is required for reassignment or unassignment');
+  if(!changed.length)return;
+  await Lead.bulkWrite(changed.map(lead=>({updateOne:{filter:{_id:lead._id},update:{$set:{assignedTo:target,assignedBy:req.user._id,assignedAt:new Date()},$inc:{version:1,assignmentVersion:1}}}})),{session});
+  await Activity.insertMany(changed.map(lead=>({lead:lead._id,actor:req.user._id,type:lead.assignedTo?'reassigned':'assigned',details:{previousAgent:lead.assignedTo?._id||null,newAgent:target,previousAgentName:lead.assignedTo?.name||"Unassigned",newAgentName:targetName,reason}})),{session});
+ });
+ res.json({message:'Assignment updated'});
+}
+async function workload(req,res) {
+ const [users,counts]=await Promise.all([User.find({role:{$in:['user','calling_agent']}}).select('name email isActive accountState').lean(),Lead.aggregate([{$match:{assignedTo:{$ne:null}}},{$group:{_id:'$assignedTo',assigned:{$sum:1},pending:{$sum:{$cond:[{$in:['$status',['won','lost']]},0,1]}},overdue:{$sum:{$cond:[{$and:[{$ne:[{$ifNull:['$followUpAt',null]},null]},{$lt:['$followUpAt',new Date()]},{$not:[{$in:['$status',['won','lost']]}]}]},1,0]}}}}])]);
+ res.json({workload:users.map(user=>({...user,id:idOf(user),...(counts.find(item=>idOf(item._id)===idOf(user))||{assigned:0,pending:0,overdue:0}),_id:user._id}))});
+}
+async function detail(req,res) {
+ if(!validId(req.params.id))fail(400,'Invalid lead ID');
+ const filter=isAdmin(req)?{}:roleOf(req.user)==='calling_agent'?{assignedTo:req.user._id}:{uploadedBy:req.user._id};
+ const lead=await Lead.findOne({_id:req.params.id,...filter}).lean();if(!lead)fail(404,'Lead not found');res.json({lead});
+}
+async function history(req,res) {
+ if(!validId(req.params.id))fail(400,'Invalid lead ID');
+ const filter=isAdmin(req)?{}:roleOf(req.user)==='calling_agent'?{assignedTo:req.user._id}:{uploadedBy:req.user._id};
+ const lead=await Lead.findOne({_id:req.params.id,...filter}).populate('uploadedBy','name').lean();if(!lead)fail(404,'Lead not found');
+ const {page,limit}=pageOf(req);
+ const [events,total]=await Promise.all([Activity.find({lead:lead._id}).populate('actor','name role').sort({createdAt:-1,_id:-1}).skip((page-1)*limit).limit(limit).lean(),Activity.countDocuments({lead:lead._id})]);
+ res.json({events,upload:{actor:lead.uploadedBy,createdAt:lead.uploadedAt||lead.createdAt,type:'uploaded',details:{importBatch:lead.importBatch,sourceRow:lead.sourceRow}},pagination:{page,limit,total,pages:Math.max(1,Math.ceil(total/limit))}});
+}
+const outcomes=['Connected','No Answer','Busy','Failed','Invalid Number','Phone Switched Off','Call Disconnected'];
+async function updateLead(req,res) {
+ if(!validId(req.params.id))fail(400,'Invalid lead ID');
+ const body=req.body, operationId=String(body.operationId||'');
+ if(!/^[a-zA-Z0-9_-]{8,100}$/.test(operationId))fail(400,'A unique operation ID is required');
+ if(!Number.isInteger(body.version)||!Number.isInteger(body.assignmentVersion))fail(400,'Lead version and assignment version are required');
+ if(body.callAttempt&&!outcomes.includes(body.callAttempt.outcome))fail(400,'Choose a call outcome');
+ if(body.status&&!['new','contacted','qualified','won','lost'].includes(body.status))fail(400,'Invalid lead progress');
+ const followUpAt=body.followUpAt?new Date(body.followUpAt):null;
+ if(followUpAt&&Number.isNaN(followUpAt.getTime()))fail(400,'Invalid follow-up date');
+ if(body.remark&&String(body.remark).length>2000)fail(400,'Remark exceeds 2000 characters');
+ let lead,event;
+ await mongoose.connection.transaction(async session=>{
+  event=await Activity.findOne({actor:req.user._id,operationId}).session(session);
+  if(event){if(idOf(event.lead)!==req.params.id)fail(409,'Operation ID already used for another lead');lead={_id:event.lead,version:event.details.appliedVersion,assignmentVersion:event.details.assignmentVersion};return;}
+  lead=await Lead.findOne({_id:req.params.id,...(isAdmin(req)?{}:{assignedTo:req.user._id})}).session(session);
+  if(!lead)fail(409,'This lead is no longer assigned to your account');
+  if((lead.version||0)!==body.version||(lead.assignmentVersion||0)!==body.assignmentVersion)fail(409,'Lead changed since your last sync. Refresh and review before retrying.');
+  const before=lead.status;
+  for(const name of ['status','callStatus','leadCategory','activity'])if(body[name]!==undefined)lead[name]=String(body[name]).slice(0,120);
+  if(body.followUpAt!==undefined)lead.followUpAt=followUpAt;
+  lead.version=(lead.version||0)+1;await lead.save({session});
+  if(body.callAttempt)await CallAttempt.create([{lead:lead._id,actor:req.user._id,phone:lead.phone,operationId,outcome:body.callAttempt.outcome,endedAt:body.callAttempt.endedAt,duration:Math.max(0,Number(body.callAttempt.duration)||0),remark:String(body.remark||'')}],{session});
+  [event]=await Activity.create([{lead:lead._id,actor:req.user._id,type:body.callAttempt?'call':'updated',operationId,details:{appliedVersion:lead.version,assignmentVersion:lead.assignmentVersion,fromStatus:before,toStatus:lead.status,remark:String(body.remark||''),callStatus:lead.callStatus,leadCategory:lead.leadCategory,activity:lead.activity,followUpAt:lead.followUpAt,callAttempt:body.callAttempt?{outcome:body.callAttempt.outcome,endedAt:body.callAttempt.endedAt,duration:Math.max(0,Number(body.callAttempt.duration)||0)}:undefined}}],{session});
+ });
+ res.json({lead,event,message:'Synced'});
+}
+async function recordCall(req,res) {
+ const body=req.body,operationId=String(body.operationId||'');
+ const phone=require('../services/leadValidation').normalizePhone(body.phone);
+ if(!phone||!outcomes.includes(body.callAttempt?.outcome)||!/^[a-zA-Z0-9_-]{8,100}$/.test(operationId))fail(400,'A valid phone number, unique operation ID and call outcome are required');
+ const call=await CallAttempt.findOneAndUpdate({actor:req.user._id,operationId},{$setOnInsert:{phone,outcome:body.callAttempt.outcome,endedAt:body.callAttempt.endedAt,duration:Math.max(0,Number(body.callAttempt.duration)||0),remark:String(body.remark||'').slice(0,2000)}},{upsert:true,new:true});
+ res.json({call,lead:{version:body.version+1,assignmentVersion:0},message:'Call outcome synced'});
+}
+function csvCell(value){const text=String(value??'');return '"'+(/^[=+\-@\t\r]/.test(text)?"'":'')+text.replace(/"/g,'""')+'"';}
+async function exportRejected(req,res) {
+ const filter={...scope(req),state:'rejected'};
+ if(req.query.batch){if(!validId(req.query.batch))fail(400,'Invalid import batch');filter.importBatch=req.query.batch;}
+ res.setHeader('Content-Type','text/csv; charset=utf-8');res.setHeader('Content-Disposition','attachment; filename="rejected-leads.csv"');
+ res.write('\uFEFF'+[...fields.map(([,header])=>header),'Rejection Reasons','Source Row'].map(csvCell).join(',')+'\r\n');
+ const cursor=Rejected.find(filter).lean().cursor();
+ for await(const row of cursor){if(res.destroyed)break;const raw=validateRow(row.raw).raw;const line=[...fields.map(([name])=>raw[name]),row.errors.join('; '),row.sourceRow].map(csvCell).join(',')+'\r\n';if(!res.write(line))await require('events').once(res,'drain');}
+ res.end();
+}
+module.exports={duplicateMatches,recordCall,detail,importLeads,manualLead,listLeads,listAssignedLeads,listImports,stats,groups,rejectedLeads,resubmit,assign,workload,history,updateLead,exportRejected};
