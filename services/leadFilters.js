@@ -9,7 +9,7 @@ function leadFilters(now = new Date()) {
     {id:'calling',title:'Calling filters',description:'Latest saved calling result for each lead',filters:[
       {id:'all',label:'All Records',match:{}},
       {id:'outbound',label:'Outbound Call',match:{lastCallDirection:'OUTGOING'}},
-      {id:'active',label:'Active Call',match:{lastCallDuration:{$gt:60}}},
+      {id:'active',label:'Active Call',match:any({lastCallDuration:{$gt:60}},field('callStatus',['Active Call']))},
       {id:'inbound',label:'Inbound Call',match:{lastCallDirection:'INCOMING'}},
       {id:'busy',label:'No Busy',match:any(field('callStatus',['Line Busy','Busy','No Busy']),{lastCallOutcome:'Busy'})},
       {id:'off',label:'No Off',match:any(field('callStatus',['Phone Switched Off','No Off']),{lastCallOutcome:'Phone Switched Off'})},

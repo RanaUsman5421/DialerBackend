@@ -48,6 +48,7 @@ app.get("/api/pairing/sessions/:id", async (req, res) => {
 app.use((error, _req, res, _next) => {
   if (error?.code === "LIMIT_FILE_SIZE") return res.status(413).json({ error: "Spreadsheet must be 5 MB or smaller" });
   if (error?.message?.includes(".xls")) return res.status(400).json({ error: error.message });
+  if(error.code===11000) return res.status(409).json({error:"Phone No or Brand Name already exists. Refresh and review the duplicate."});
   if(error.status) return res.status(error.status).json({error:error.message});
   if(error.name === "CastError" || error.name === "ValidationError") return res.status(400).json({error:"Invalid request data"});
   console.error("[http]", error);

@@ -110,7 +110,12 @@ async function listLeads(req,res) {
  if(chosenFilter)filter.$and=[...(filter.$and||[]),chosenFilter.match];
  const queues={pending:{assignedTo:null,status:{$nin:['won','lost']}},inProgress:{assignedTo:{$ne:null},status:{$nin:['won','lost']}},closed:{status:'won'},dead:{status:'lost'}};
  if(req.query.queue){if(!queues[req.query.queue])fail(400,'Invalid lead queue');filter.$and=[...(filter.$and||[]),queues[req.query.queue]];}
- const [leads,total,counts,filterSections,todaySchedules]=await Promise.all([Lead.find(filter).populate('assignedTo','name username email').populate('group','name').sort({createdAt:-1}).skip((page-1)*limit).limit(limit).lean(),Lead.countDocuments(filter),Lead.aggregate([{$match:queueBase},{$group:{_id:{$switch:{branches:[{case:{$eq:['$status','won']},then:'closed'},{case:{$eq:['$status','lost']},then:'dead'},{case:{$ne:[{$ifNull:['$assignedTo',null]},null]},then:'inProgress'}],default:'pending'}},count:{$sum:1}}}]),filterCounts(Lead,queueBase,sections),Lead.countDocuments({...queueBase,followUpAt:{$gte:todayStart,$lt:new Date(todayStart.getTime()+86400000)}})]);
+ const [leads,total,counts,filterSections,todaySchedules]=await Promise.all([Lead.find(filter).populate('lastCallBy','name username').populate('assignedTo','name username email').populate('group','name').sort({createdAt:-1}).skip((page-1)*limit).limit(limit).lean(),Lead.countDocuments(filter),Lead.aggregate([{$match:queueBase},{$group:{_id:{$switch:{branches:[{case:{$eq:['$status','won']},then:'closed'},{case:{$eq:['$status','lost']},then:'dead'},{case:{$ne:[{$ifNull:['$assignedTo',null]},null]},then:'inProgress'}],default:'pending'}},count:{$sum:1}}}]),filterCounts(Lead,queueBase,sections),Lead.countDocuments({...queueBase,followUpAt:{$gte:todayStart,$lt:new Date(todayStart.getTime()+86400000)}})]);
+ if(leads.length){
+  const latest=await Activity.aggregate([{$match:{lead:{$in:leads.map(lead=>lead._id)}}},{$facet:{remarks:[{$match:{'details.remark':{$type:'string',$ne:''}}},{$sort:{createdAt:-1,_id:-1}},{$group:{_id:'$lead',text:{$first:'$details.remark'}}}],calls:[{$match:{type:'call'}},{$sort:{createdAt:-1,_id:-1}},{$group:{_id:'$lead',actor:{$first:'$actor'},date:{$first:'$createdAt'}}},{$lookup:{from:User.collection.name,localField:'actor',foreignField:'_id',pipeline:[{$project:{name:1,username:1}}],as:'user'}}]}}]);
+  const remarks=new Map(latest[0].remarks.map(item=>[String(item._id),item.text])),calls=new Map(latest[0].calls.map(item=>[String(item._id),item]));
+  for(const lead of leads){if(lead.latestRemark===undefined)lead.latestRemark=remarks.get(String(lead._id));const call=calls.get(String(lead._id));if(!lead.lastCallBy&&call){lead.lastCallBy=call.user[0];lead.lastCallAt=call.date;}}
+ }
  const queueCounts={pending:0,inProgress:0,closed:0,dead:0};for(const item of counts)queueCounts[item._id]=item.count;
  res.json({leads,queueCounts,filterSections,todaySchedules,pagination:{page,limit,total,pages:Math.max(1,Math.ceil(total/limit))}});
 }
@@ -229,12 +234,28 @@ async function updateLead(req,res) {
   if(!lead)fail(409,'This lead is no longer assigned to your account');
   if((lead.version||0)!==body.version||(lead.assignmentVersion||0)!==body.assignmentVersion)fail(409,'Lead changed since your last sync. Refresh and review before retrying.');
   const before=lead.status;
+  const changedFields={};
+  if(body.phone!==undefined || body.perDayOrders!==undefined){
+   if(!isAdmin(req))fail(403,'Only Admin can edit lead contact details');
+   if(body.phone!==undefined){
+    const phone=require('../services/leadValidation').normalizePhone(body.phone);
+    if(!phone)fail(400,'Phone No must be a valid Pakistani number');
+    if(phone!==lead.phone){
+     if(await Lead.exists({_id:{$ne:lead._id},$or:[{phoneNormalized:phone},{phoneKey:phone},{phone}]}).session(session))fail(409,'Phone No already exists');
+     changedFields.phone={from:lead.phone,to:phone};lead.phone=phone;lead.phoneNormalized=phone;lead.phoneKey=phone;
+    }
+   }
+   if(body.perDayOrders!==undefined){const orders=String(body.perDayOrders).trim();if(!orders||orders.length>2000)fail(400,'Per day Orders is required (maximum 2000 characters)');changedFields.perDayOrders={from:lead.perDayOrders,to:orders};lead.perDayOrders=orders;}
+  }
+  if(body.remark!==undefined)lead.latestRemark=String(body.remark);
+  if(body.callAttempt){lead.lastCallBy=req.user._id;lead.lastCallAt=new Date();}
+
   if(body.callAttempt){lead.lastCallOutcome=body.callAttempt.outcome;lead.lastCallDuration=Math.max(0,Number(body.callAttempt.duration)||0);lead.lastCallDirection=['OUTGOING','INCOMING'].includes(body.callAttempt.direction)?body.callAttempt.direction:undefined;}
   for(const name of ['status','callStatus','leadCategory','activity'])if(body[name]!==undefined)lead[name]=String(body[name]).slice(0,120);
   if(body.followUpAt!==undefined)lead.followUpAt=followUpAt;
   lead.version=(lead.version||0)+1;await lead.save({session});
   if(body.callAttempt)await CallAttempt.create([{lead:lead._id,actor:req.user._id,phone:lead.phone,operationId,outcome:body.callAttempt.outcome,direction:['OUTGOING','INCOMING'].includes(body.callAttempt.direction)?body.callAttempt.direction:undefined,endedAt:body.callAttempt.endedAt,duration:Math.max(0,Number(body.callAttempt.duration)||0),remark:String(body.remark||'')}],{session});
-  [event]=await Activity.create([{lead:lead._id,actor:req.user._id,type:body.callAttempt?'call':'updated',operationId,details:{appliedVersion:lead.version,assignmentVersion:lead.assignmentVersion,fromStatus:before,toStatus:lead.status,remark:String(body.remark||''),callStatus:lead.callStatus,leadCategory:lead.leadCategory,activity:lead.activity,followUpAt:lead.followUpAt,callAttempt:body.callAttempt?{outcome:body.callAttempt.outcome,direction:lead.lastCallDirection,endedAt:body.callAttempt.endedAt,duration:Math.max(0,Number(body.callAttempt.duration)||0)}:undefined}}],{session});
+  [event]=await Activity.create([{lead:lead._id,actor:req.user._id,type:body.callAttempt?'call':'updated',operationId,details:{appliedVersion:lead.version,assignmentVersion:lead.assignmentVersion,fromStatus:before,toStatus:lead.status,changedFields,remark:String(body.remark||''),callStatus:lead.callStatus,leadCategory:lead.leadCategory,activity:lead.activity,followUpAt:lead.followUpAt,callAttempt:body.callAttempt?{outcome:body.callAttempt.outcome,direction:lead.lastCallDirection,endedAt:body.callAttempt.endedAt,duration:Math.max(0,Number(body.callAttempt.duration)||0)}:undefined}}],{session});
  });
  res.json({lead,event,message:'Synced'});
 }

@@ -124,6 +124,16 @@ const valid=(brand='Alpha',phone='3054447156')=>({brandName:brand,phone,email:''
  assert.equal((await api('/api/leads?from=2026-02-30')).status,400);assert.equal((await api('/api/leads?from=2026-09-15&to=2026-09-01')).status,400);assert.equal((await api('/api/leads?schedule=wrong')).status,400);
  const dated=await api(`/api/leads?q=QueueFixture&from=${day}&to=${day}`);assert.equal(dated.status,200);assert.equal(dated.data.pagination.total,4);
  assert.equal((await api('/api/leads?q=Batch&limit=100')).data.leads.length,100);
+ const fresh=await Lead.findById(lead._id).lean();const edit={operationId:'admin-contact-edit-001',version:fresh.version,assignmentVersion:fresh.assignmentVersion,phone:'03059998888',perDayOrders:'42',remark:'Updated verified contact'};
+ assert.equal((await api(`/api/leads/${lead._id}`,'Second','PATCH',edit)).status,403);
+ assert.equal((await api(`/api/leads/${lead._id}`,'Admin','PATCH',{...edit,phone:'123'})).status,400);
+ assert.equal((await api(`/api/leads/${lead._id}`,'Admin','PATCH',{...edit,phone:'03052222222'})).status,409);
+ const edited=await api(`/api/leads/${lead._id}`,'Admin','PATCH',edit);assert.equal(edited.status,200,JSON.stringify(edited.data));assert.equal(edited.data.lead.phone,'+923059998888');assert.equal(edited.data.lead.perDayOrders,'42');assert.equal(edited.data.event.details.changedFields.phone.from,fresh.phone);
+ assert.equal((await api(`/api/leads/${lead._id}`,'Admin','PATCH',edit)).status,200);assert.equal(await Activity.countDocuments({operationId:edit.operationId}),1);
+ assert.equal((await api(`/api/leads/${lead._id}`,'Admin','PATCH',{...edit,operationId:'admin-contact-stale-001'})).status,409);
+ const scheduleEdit={operationId:'admin-schedule-edit-001',version:edited.data.lead.version,assignmentVersion:edited.data.lead.assignmentVersion,followUpAt:new Date(todayStart.getTime()+7200000).toISOString()};
+ assert.equal((await api(`/api/leads/${lead._id}`,'Admin','PATCH',scheduleEdit)).status,200);assert.equal((await Lead.findById(lead._id)).followUpAt.toISOString(),scheduleEdit.followUpAt);
+ const displayed=await api('/api/leads?q=Alpha');const displayedLead=displayed.data.leads.find(row=>row._id===String(lead._id));assert.equal(displayedLead.latestRemark,'Updated verified contact');assert.equal(displayedLead.lastCallBy.name,'Caller');
  console.log('Management integration checks passed: roles, approval, validation, duplicates, import results, correction, scoped access, assignments, workload, atomic/idempotent updates and history.');
  }finally{await new Promise(resolve=>io.close(resolve));await mongoose.disconnect();await repl.stop();}
 })().catch(error=>{console.error(error);process.exitCode=1});
