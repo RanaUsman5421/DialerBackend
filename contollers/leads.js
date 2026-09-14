@@ -215,10 +215,19 @@ async function history(req,res) {
  const [events,total]=await Promise.all([Activity.find({lead:lead._id}).populate('actor','name role').sort({createdAt:-1,_id:-1}).skip((page-1)*limit).limit(limit).lean(),Activity.countDocuments({lead:lead._id})]);
  res.json({events,upload:{actor:lead.uploadedBy,createdAt:lead.uploadedAt||lead.createdAt,type:'uploaded',details:{importBatch:lead.importBatch,sourceRow:lead.sourceRow}},pagination:{page,limit,total,pages:Math.max(1,Math.ceil(total/limit))}});
 }
-const outcomes=['Connected','No Answer','Busy','Failed','Invalid Number','Phone Switched Off','Call Disconnected'];
+// Retain legacy outcomes for older clients; the dialer now uses Call Status directly.
+const outcomes=['Connected','No Answer','Busy','Failed','Invalid Number','Phone Switched Off','Call Disconnected','Line Busy','Call Back Later','Interested','Not Interested','Not Qualified','Follow-Up Required','Do Not Contact','Already Using Service'];
+function cleanRemark(body) {
+ if(body.remark===undefined)return;
+ if(typeof body.remark!=='string')fail(400,'Remark must be text');
+ body.remark=body.remark.trim();
+ if(body.remark.length>2000)fail(400,'Remark exceeds 2000 characters');
+ if(!body.remark)delete body.remark;
+}
 async function updateLead(req,res) {
  if(!validId(req.params.id))fail(400,'Invalid lead ID');
  const body=req.body, operationId=String(body.operationId||'');
+ cleanRemark(body);
  if(!/^[a-zA-Z0-9_-]{8,100}$/.test(operationId))fail(400,'A unique operation ID is required');
  if(!Number.isInteger(body.version)||!Number.isInteger(body.assignmentVersion))fail(400,'Lead version and assignment version are required');
  if(body.callAttempt&&!outcomes.includes(body.callAttempt.outcome))fail(400,'Choose a call outcome');
@@ -247,7 +256,7 @@ async function updateLead(req,res) {
    }
    if(body.perDayOrders!==undefined){const orders=String(body.perDayOrders).trim();if(!orders||orders.length>2000)fail(400,'Per day Orders is required (maximum 2000 characters)');changedFields.perDayOrders={from:lead.perDayOrders,to:orders};lead.perDayOrders=orders;}
   }
-  if(body.remark!==undefined)lead.latestRemark=String(body.remark);
+  if(body.remark!==undefined)lead.latestRemark=body.remark;
   if(body.callAttempt){lead.lastCallBy=req.user._id;lead.lastCallAt=new Date();}
 
   if(body.callAttempt){lead.lastCallOutcome=body.callAttempt.outcome;lead.lastCallDuration=Math.max(0,Number(body.callAttempt.duration)||0);lead.lastCallDirection=['OUTGOING','INCOMING'].includes(body.callAttempt.direction)?body.callAttempt.direction:undefined;}
@@ -261,9 +270,10 @@ async function updateLead(req,res) {
 }
 async function recordCall(req,res) {
  const body=req.body,operationId=String(body.operationId||'');
+ cleanRemark(body);
  const phone=require('../services/leadValidation').normalizePhone(body.phone);
  if(!phone||!outcomes.includes(body.callAttempt?.outcome)||!/^[a-zA-Z0-9_-]{8,100}$/.test(operationId))fail(400,'A valid phone number, unique operation ID and call outcome are required');
- const call=await CallAttempt.findOneAndUpdate({actor:req.user._id,operationId},{$setOnInsert:{phone,outcome:body.callAttempt.outcome,endedAt:body.callAttempt.endedAt,duration:Math.max(0,Number(body.callAttempt.duration)||0),remark:String(body.remark||'').slice(0,2000)}},{upsert:true,new:true});
+ const call=await CallAttempt.findOneAndUpdate({actor:req.user._id,operationId},{$setOnInsert:{phone,outcome:body.callAttempt.outcome,callStatus:body.callStatus,leadCategory:body.leadCategory,activity:body.activity,followUpAt:body.followUpAt||null,direction:body.callAttempt.direction,endedAt:body.callAttempt.endedAt,duration:Math.max(0,Number(body.callAttempt.duration)||0),remark:body.remark||''}},{upsert:true,new:true,runValidators:true});
  res.json({call,lead:{version:body.version+1,assignmentVersion:0},message:'Call outcome synced'});
 }
 function csvCell(value){const text=String(value??'');return '"'+(/^[=+\-@\t\r]/.test(text)?"'":'')+text.replace(/"/g,'""')+'"';}

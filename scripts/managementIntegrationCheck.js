@@ -71,6 +71,11 @@ const valid=(brand='Alpha',phone='3054447156')=>({brandName:brand,phone,email:''
  assert.equal((await api(`/api/leads/${lead._id}`,'Caller','PATCH',update)).status,200);assert.equal(await Activity.countDocuments({operationId:update.operationId}),1);
  assert.equal((await api(`/api/leads/${lead._id}`,'Caller','PATCH',{...update,operationId:'stale-operation-123'})).status,409);
  const load=await api('/api/leads/workload');const counts=load.data.workload.find(user=>user.id===String(caller._id));assert.equal(counts.pending,1);assert.equal(counts.overdue,1);
+ const blankRemark=await api(`/api/leads/${lead._id}`,'Caller','PATCH',{operationId:'blank-remark-check-001',version:saved.data.lead.version,assignmentVersion:lead.assignmentVersion,remark:'   '});
+ assert.equal(blankRemark.status,200);assert.equal(blankRemark.data.lead.latestRemark,'Spoke to owner');
+ const statusCall=await api('/api/leads/call-record','Caller','PATCH',{operationId:'status-call-check-001',phone:'03001112222',version:0,callStatus:'Interested',leadCategory:'Premium',activity:'Meeting',remark:'  Wants a meeting  ',callAttempt:{outcome:'Interested',direction:'OUTGOING',endedAt:new Date().toISOString(),duration:80}});
+ assert.equal(statusCall.status,200,JSON.stringify(statusCall.data));assert.equal(statusCall.data.call.remark,'Wants a meeting');assert.equal(statusCall.data.call.callStatus,'Interested');assert.equal(statusCall.data.call.leadCategory,'Premium');
+ assert.equal((await api('/api/leads/call-record','Caller','PATCH',{operationId:'long-remark-check-001',phone:'03001112222',version:0,remark:'x'.repeat(2001),callAttempt:{outcome:'Line Busy'}})).status,400);
  assert.equal((await api('/api/leads/assign','Admin','POST',{leadIds:[lead._id],assignedTo:second._id})).status,400);
  assert.equal((await api('/api/leads/assign','Admin','POST',{leadIds:[lead._id],assignedTo:second._id,reason:'Balance workload'})).status,200);
  assert.equal((await api(`/api/leads/${lead._id}`,'Caller','PATCH',{...update,operationId:'after-transfer-123',version:saved.data.lead.version})).status,409);
@@ -100,7 +105,7 @@ const valid=(brand='Alpha',phone='3054447156')=>({brandName:brand,phone,email:''
  const team=await api('/api/leads/team-performance');assert.equal(team.status,200);assert.equal(team.data.pagination.total,6);
  assert(team.data.users.every(user=>!('password' in user)&&!('token' in user)&&user.createdAt));
  const secondPerformance=team.data.users.find(user=>user.id===String(second._id));assert.equal(secondPerformance.metrics.assigned,1);assert.equal(secondPerformance.metrics.worked,1);assert.equal(secondPerformance.metrics.pending,1);assert.equal(secondPerformance.metrics.overdue,1);assert.equal(secondPerformance.metrics.assignedGroups,1);assert.equal(secondPerformance.metrics.assignedToThem,1);
- const callerPerformance=team.data.users.find(user=>user.id===String(caller._id));assert.equal(callerPerformance.metrics.callAttempts,1);assert.equal(callerPerformance.metrics.assigned,1);assert.equal(callerPerformance.metrics.assignedToThem,1);
+ const callerPerformance=team.data.users.find(user=>user.id===String(caller._id));assert.equal(callerPerformance.metrics.callAttempts,2);assert.equal(callerPerformance.metrics.assigned,1);assert.equal(callerPerformance.metrics.assignedToThem,1);
  assert.equal(team.data.users.find(user=>user.id===String(admin._id)).metrics.assignedByThem,1);
  assert.equal(team.data.users.find(user=>user.id===String(other._id)).metrics.uploaded,4);
  assert.equal((await api('/api/leads/team-performance','Uploader')).status,403);assert.equal((await api('/api/leads/team-performance','Caller')).status,403);
