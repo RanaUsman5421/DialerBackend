@@ -23,6 +23,7 @@ const port = Number(process.env.PORT || 3000);
 
 app.use(cors({ origin: allowedOrigin }));
 app.use(express.json({ limit: "64kb" }));
+app.use('/updates/android', require('./routes/androidUpdates'));
 app.use('/updates', require('./routes/updates'));
 
 app.get("/", (_req, res) => res.json({ name: "Lionex Bridge", status: "ok" }));

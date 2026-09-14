@@ -1,4 +1,8 @@
 Next update publish karne ka process yeh hai:
+Android APK updater ka separate signing, credentials template, build aur GitHub publish method:
+../LionexPhone/ANDROID-UPDATES.md
+Android endpoint: /updates/android/latest. Android config: updates/android/updater.json.
+Desktop ki updater.key ko Android signing mein use NA karein.
 1. Changes complete karke version 0.1.1 se 0.1.2 karein, teen files mein:
    - LionexDialer/package.json
    - LionexDialer/src-tauri/Cargo.toml
