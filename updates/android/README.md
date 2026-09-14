@@ -2,7 +2,11 @@
 
 `lionexphone-1.1.apk`: signed release APK, applicationId `com.example.lionexphone`, versionCode 2.
 
-SHA-256: `0ccbb68c4db35082c4d8bb8179538f2dfbe2410b8cab9b491907feb7ed625e86`.
+SHA-256: `b5a45ba6cec34956a4756947b390ff66d6f3d372d31d8e6f611dd1969d491cea`.
+
+Rebuilt with the supplied orange/red phone logo; versionCode remains 2 / versionName 1.1 as requested.
+The previous staged APK is backed up locally in LionexPhone/app/build/release-backups.
+Already-installed 1.1 builds will not detect this same-version rebuild as a newer update; install it manually.
 
 APK Signature Scheme v2 verified with Android SDK apksigner.
 Public signing certificate SHA-256: `bbe07416b6b6ac64f13a6fe070aa3a525c44b42e0df185f379bf715d1e68550d`.
