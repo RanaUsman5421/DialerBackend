@@ -120,10 +120,18 @@ async function listLeads(req,res) {
  res.json({leads,queueCounts,filterSections,todaySchedules,pagination:{page,limit,total,pages:Math.max(1,Math.ceil(total/limit))}});
 }
 async function listAssignedLeads(req,res) {
- const {page,limit}=pageOf(req), filter={assignedTo:req.user._id};
+ const {page,limit}=pageOf(req), base={assignedTo:req.user._id}, filter={...base};
  if(req.query.status)filter.status=req.query.status;
- const [leads,total]=await Promise.all([Lead.find(filter).populate('group','name').sort({followUpAt:1,createdAt:-1}).skip((page-1)*limit).limit(limit).lean(),Lead.countDocuments(filter)]);
- res.json({leads,pagination:{page,limit,total,pages:Math.max(1,Math.ceil(total/limit))}});
+ const progress={$switch:{branches:[
+  {case:{$or:[{$eq:['$status','lost']},{$eq:['$leadCategory','Dead Lead']}]},then:'dead'},
+  {case:{$or:[{$eq:['$status','won']},{$in:['$activity',['Registered','Closed']]}]},then:'closed'},
+  {case:{$or:[{$in:['$status',['contacted','qualified']]},{$gt:[{$strLenCP:{$ifNull:['$callStatus','']}},0]},{$gt:[{$strLenCP:{$ifNull:['$leadCategory','']}},0]},{$gt:[{$strLenCP:{$ifNull:['$activity','']}},0]},{$gt:[{$strLenCP:{$ifNull:['$latestRemark','']}},0]},{$ne:[{$ifNull:['$lastCallAt',null]},null]},{$ne:[{$ifNull:['$followUpAt',null]},null]}]},then:'inProgress'}
+ ],default:'pending'}};
+ const allowed=new Set(['pending','inProgress','closed','dead']);
+ if(req.query.progress){if(!allowed.has(req.query.progress))fail(400,'Invalid lead progress filter');filter.$expr={$eq:[progress,req.query.progress]};}
+ const [leads,total,rows]=await Promise.all([Lead.find(filter).populate('group','name').sort({followUpAt:1,createdAt:-1}).skip((page-1)*limit).limit(limit).lean(),Lead.countDocuments(filter),Lead.aggregate([{$match:base},{$group:{_id:progress,count:{$sum:1}}}])]);
+ const progressCounts={pending:0,inProgress:0,closed:0,dead:0};for(const row of rows)if(allowed.has(row._id))progressCounts[row._id]=row.count;
+ res.json({leads,progressCounts,pagination:{page,limit,total,pages:Math.max(1,Math.ceil(total/limit))}});
 }
 async function listImports(req,res){res.json({imports:await LeadImport.find(scope(req)).populate('group','name').populate('uploadedBy','name').sort({createdAt:-1}).limit(50).lean()});}
 async function stats(req,res) {

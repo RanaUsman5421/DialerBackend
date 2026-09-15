@@ -87,6 +87,8 @@ const valid=(brand='Alpha',phone='3054447156')=>({brandName:brand,phone,email:''
  const queueFixture=await Lead.create(['new','new','won','lost'].map((status,i)=>({...validateRow(valid(`QueueFixture ${i}`,String(3070000001+i))).data,status,uploadedBy:other._id,group:lead.group._id||lead.group,assignedTo:i===1?caller._id:null})));
  await Lead.updateOne({_id:queueFixture[0]._id},{$set:{callStatus:'Line Busy',lastCallOutcome:'Busy',lastCallDirection:'OUTGOING',lastCallDuration:75,activity:'Proposal Sent'}});
  await Lead.updateOne({_id:queueFixture[1]._id},{$set:{callStatus:'Interested',leadCategory:'Premium',followUpAt:new Date(Date.now()+15*86400000)}});
+ const assignedProgress=await api('/api/leads/assigned','Caller');assert.deepEqual(assignedProgress.data.progressCounts,{pending:0,inProgress:1,closed:0,dead:0});assert.equal(assignedProgress.data.pagination.total,1);
+ assert.equal((await api('/api/leads/assigned?progress=inProgress','Caller')).data.leads.length,1);assert.equal((await api('/api/leads/assigned?progress=invalid','Caller')).status,400);
  const queueAll=await api('/api/leads?q=QueueFixture');assert.deepEqual(queueAll.data.queueCounts,{pending:1,inProgress:1,closed:1,dead:1});assert.equal(queueAll.data.pagination.total,4);
  for(const [queue,index] of [['pending',0],['inProgress',1],['closed',2],['dead',3]]){const filtered=await api(`/api/leads?q=QueueFixture&queue=${queue}`);assert.equal(filtered.data.pagination.total,1);assert.equal(filtered.data.leads[0]._id,String(queueFixture[index]._id));assert.deepEqual(filtered.data.queueCounts,queueAll.data.queueCounts);}
  assert.deepEqual((await api('/api/leads?q=QueueFixture','Uploader')).data.queueCounts,{pending:0,inProgress:0,closed:0,dead:0});
