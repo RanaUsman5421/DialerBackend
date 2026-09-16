@@ -1,7 +1,7 @@
 {
-  "version": "0.1.2",
-  "notes": "Dedicated Updates page, matching navigation styling and update notification dot.",
-  "pub_date": "2026-09-14T03:41:20.133Z",
-  "installer": "lionexdialer_0.1.2_x64-setup.exe",
-  "signatureFile": "lionexdialer_0.1.2_x64-setup.exe.sig"
+  "version": "0.1.3",
+  "notes": "Is version mein error boundaries lagayi hain ab agar kisi ka issue aaye ga to clear pata chal jaye ga k kya issue hai.",
+  "pub_date": "2026-09-16T10:22:07.897Z",
+  "installer": "lionexdialer_0.1.3_x64-setup.exe",
+  "signatureFile": "lionexdialer_0.1.3_x64-setup.exe.sig"
 }

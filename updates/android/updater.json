@@ -1,10 +1,10 @@
 {
   "enabled": true,
   "applicationId": "com.example.lionexphone",
-  "versionCode": 4,
-  "versionName": "1.2.2",
-  "apkUrl": "https://github.com/RanaUsman5421/DialerBackend/releases/download/android-v1.2.2/lionexphone-1.2.2.apk",
-  "sha256": "44a6c01692e5d1d03092cb07349e88cb29567aedffb6866209bbbcae61b750aa",
-  "sizeBytes": 12552231,
-  "notes": "Release notes"
+  "versionCode": 5,
+  "versionName": "1.2.3",
+  "apkUrl": "https://github.com/RanaUsman5421/DialerBackend/releases/download/android-v1.2.3/lionexphone-1.2.3.apk",
+  "sha256": "32d2e6477ba28bb7e7034a8610d1c8c58a436f2377f12156e9892921aec0eae5",
+  "sizeBytes": 12552199,
+  "notes": "Improved desktop pairing notification."
 }
